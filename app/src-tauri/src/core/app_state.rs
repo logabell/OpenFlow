@@ -5,7 +5,7 @@ use anyhow::{anyhow, Result};
 use parking_lot::Mutex;
 
 use crate::asr::{AsrBackend, AsrConfig};
-use crate::audio::{AudioPipelineConfig, AudioProcessingMode};
+use crate::audio::AudioPipelineConfig;
 use crate::core::events;
 use crate::llm::AutocleanMode;
 use crate::models::{
@@ -264,7 +264,6 @@ impl AppState {
             }
         }
 
-        let processing_mode = parse_processing_mode(&settings.processing_mode);
         let vad_config = VadConfig {
             sensitivity: settings.vad_sensitivity.clone(),
             ..VadConfig::default()
@@ -272,7 +271,6 @@ impl AppState {
 
         if let Some(pipeline) = guard.as_mut() {
             pipeline.set_mode(parse_autoclean_mode(&settings.autoclean_mode));
-            pipeline.set_processing_mode(processing_mode);
             pipeline.set_vad_config(vad_config.clone());
             pipeline.set_paste_shortcut(desired_paste_shortcut);
             if let Some(app) = app {
@@ -285,12 +283,10 @@ impl AppState {
         self.sync_model_environment();
         let audio_config = AudioPipelineConfig {
             device_id: settings.audio_device_id.clone(),
-            processing_mode,
         };
         let pipeline =
             SpeechPipeline::new(app.clone(), audio_config, vad_config.clone(), desired_asr_config);
         pipeline.set_mode(parse_autoclean_mode(&settings.autoclean_mode));
-        pipeline.set_processing_mode(processing_mode);
         pipeline.set_vad_config(vad_config);
         pipeline.set_paste_shortcut(desired_paste_shortcut);
         *guard = Some(pipeline);
@@ -472,13 +468,6 @@ fn parse_paste_shortcut(value: &str) -> PasteShortcut {
         "ctrl-v" => PasteShortcut::CtrlV,
         "ctrl-shift-v" => PasteShortcut::CtrlShiftV,
         _ => PasteShortcut::CtrlShiftV,
-    }
-}
-
-fn parse_processing_mode(value: &str) -> AudioProcessingMode {
-    match value {
-        "enhanced" => AudioProcessingMode::Enhanced,
-        _ => AudioProcessingMode::Standard,
     }
 }
 

@@ -76,23 +76,7 @@ export interface AppSettings {
   polishModelReady: boolean;
   debugTranscripts: boolean;
   audioDeviceId: string | null;
-  processingMode: "standard" | "enhanced";
   vadSensitivity: "low" | "medium" | "high";
-}
-
-export interface AudioProcessingModeState {
-  preferred: "standard" | "enhanced";
-  effective: "standard" | "enhanced";
-}
-
-export type AudioProcessingReason =
-  | "user"
-  | "performance-fallback"
-  | "performance-recovered"
-  | undefined;
-
-export interface AudioProcessingPayload extends AudioProcessingModeState {
-  reason?: AudioProcessingReason;
 }
 
 export interface PerformanceMetrics {
@@ -119,7 +103,6 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   polishModelReady: false,
   debugTranscripts: false,
   audioDeviceId: null,
-  processingMode: "standard",
   vadSensitivity: "medium",
 };
 
@@ -169,8 +152,6 @@ interface AppState {
   dismissToast: (id: number) => void;
   audioDevices: AudioDevice[];
   refreshAudioDevices: () => Promise<void>;
-  processingMode: AudioProcessingModeState;
-  applyProcessingModeUpdate: (payload: AudioProcessingPayload) => void;
   downloadLogs: DownloadLogEntry[];
   addDownloadLog: (entry: Omit<DownloadLogEntry, "id" | "timestamp">) => void;
   clearDownloadLogs: () => void;
@@ -194,10 +175,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   models: [],
   toasts: [],
   audioDevices: [],
-  processingMode: {
-    preferred: DEFAULT_APP_SETTINGS.processingMode,
-    effective: DEFAULT_APP_SETTINGS.processingMode,
-  },
   downloadLogs: [],
   downloadStartTimes: {},
   initialize: async () => {
@@ -223,22 +200,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   refreshSettings: async () => {
     const settings = await invoke<AppSettings>("get_settings");
-    set((state) => ({
-      settings,
-      processingMode: {
-        preferred: settings.processingMode,
-        effective: state.processingMode.effective,
-      },
-    }));
+    set({ settings });
   },
   setSettingsState: (settings) =>
-    set((state) => ({
-      settings,
-      processingMode: {
-        preferred: settings.processingMode,
-        effective: state.processingMode.effective,
-      },
-    })),
+    set({ settings }),
   setTranscript: (text) => set({ lastTranscript: text }),
   setMetrics: (metrics) => set({ metrics }),
   setLogs: (logs) => set({ logs }),
@@ -548,39 +513,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   refreshAudioDevices: async () => {
     const devices = await invoke<AudioDevice[]>("list_audio_devices");
     set({ audioDevices: devices });
-  },
-  applyProcessingModeUpdate: (payload) => {
-    const previous = get().processingMode;
-    set({
-      processingMode: {
-        preferred: payload.preferred,
-        effective: payload.effective,
-      },
-    });
-
-    const notify = get().notify;
-    if (
-      payload.reason === "performance-fallback" &&
-      previous.effective === "enhanced" &&
-      payload.effective === "standard"
-    ) {
-      notify({
-        title: "Enhanced audio paused",
-        description:
-          "System load is high, so Enhanced audio is temporarily disabled.",
-        variant: "warning",
-      });
-    } else if (
-      payload.reason === "performance-recovered" &&
-      previous.effective === "standard" &&
-      payload.effective === "enhanced"
-    ) {
-      notify({
-        title: "Enhanced audio restored",
-        description: "Load has recovered; Enhanced audio is active again.",
-        variant: "info",
-      });
-    }
   },
   addDownloadLog: (entry) =>
     set((state) => ({

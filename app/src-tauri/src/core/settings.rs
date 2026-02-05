@@ -28,7 +28,6 @@ pub struct FrontendSettings {
     pub polish_model_ready: bool,
     pub debug_transcripts: bool,
     pub audio_device_id: Option<String>,
-    pub processing_mode: String,
     pub vad_sensitivity: String,
 }
 
@@ -53,7 +52,6 @@ impl Default for FrontendSettings {
             polish_model_ready: false,
             debug_transcripts: false,
             audio_device_id: None,
-            processing_mode: "standard".into(),
             vad_sensitivity: "medium".into(),
         }
     }

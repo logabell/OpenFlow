@@ -1,7 +1,6 @@
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
-use crate::audio::AudioProcessingMode;
 use crate::core::linux_setup::LinuxPermissionsStatus;
 use crate::core::pipeline::EngineMetrics;
 use crate::llm::AutocleanMode;
@@ -15,7 +14,6 @@ pub const EVENT_TRANSCRIPTION_OUTPUT: &str = "transcription-output";
 pub const EVENT_TRANSCRIPTION_ERROR: &str = "transcription-error";
 pub const EVENT_PERFORMANCE_METRICS: &str = "performance-metrics";
 pub const EVENT_MODEL_STATUS: &str = "model-status";
-pub const EVENT_AUDIO_PROCESSING_MODE: &str = "audio-processing-mode";
 
 pub const EVENT_PASTE_FAILED: &str = "paste-failed";
 pub const EVENT_PASTE_UNCONFIRMED: &str = "paste-unconfirmed";
@@ -132,27 +130,4 @@ pub fn emit_metrics(app: &AppHandle, metrics: &EngineMetrics) {
 
 pub fn emit_model_status<T: Serialize + Clone>(app: &AppHandle, payload: T) {
     let _ = app.emit(EVENT_MODEL_STATUS, payload);
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AudioProcessingModePayload {
-    pub preferred: AudioProcessingMode,
-    pub effective: AudioProcessingMode,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
-}
-
-pub fn emit_audio_processing_mode(
-    app: &AppHandle,
-    preferred: AudioProcessingMode,
-    effective: AudioProcessingMode,
-    reason: Option<&str>,
-) {
-    let payload = AudioProcessingModePayload {
-        preferred,
-        effective,
-        reason: reason.map(ToOwned::to_owned),
-    };
-    let _ = app.emit(EVENT_AUDIO_PROCESSING_MODE, payload);
 }

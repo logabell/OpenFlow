@@ -7,7 +7,6 @@ import {
   type AppSettings,
   DEFAULT_APP_SETTINGS,
   type ModelSnapshotPayload,
-  type AudioProcessingPayload,
 } from "./state/appStore";
 import Dashboard from "./components/Dashboard";
 import SettingsPanel from "./components/SettingsPanel";
@@ -44,7 +43,6 @@ const App = () => {
     toggleLogViewer,
     setLogs,
     setModelSnapshot,
-    applyProcessingModeUpdate,
     notify,
   } = useAppStore();
 
@@ -72,16 +70,6 @@ const App = () => {
         },
       );
       unlisteners.push(() => performanceRecoveredDispose());
-
-      const processingModeDispose = await listen<AudioProcessingPayload>(
-        "audio-processing-mode",
-        (event) => {
-          if (event.payload) {
-            applyProcessingModeUpdate(event.payload);
-          }
-        },
-      );
-      unlisteners.push(() => processingModeDispose());
 
       const secureDispose = await listen("secure-field-blocked", () => {
         setHudState("secure-blocked");
@@ -279,7 +267,6 @@ const App = () => {
     toggleLogViewer,
     setLogs,
     setModelSnapshot,
-    applyProcessingModeUpdate,
     notify,
   ]);
 

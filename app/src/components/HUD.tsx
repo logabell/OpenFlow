@@ -13,15 +13,10 @@ const stateCopy: Record<string, string> = {
 const HUD = () => {
   const hudState = useAppStore((state) => state.hudState);
   const metrics = useAppStore((state) => state.metrics);
-  const processingMode = useAppStore((state) => state.processingMode);
 
   const primaryMessage = stateCopy[hudState];
   const isVisible = hudState !== "idle";
   const performanceMode = hudState === "performance-warning" || metrics?.performanceMode;
-  const processingFallback =
-    processingMode.preferred === "enhanced" && processingMode.effective === "standard";
-  const processingBadgeLabel =
-    processingMode.effective === "enhanced" ? "Enhanced audio" : "Standard audio";
 
   return (
     <div className="pointer-events-none fixed inset-0 flex items-end justify-center pb-12">
@@ -54,21 +49,6 @@ const HUD = () => {
                 {performanceMode && (
                   <span className="flex items-center gap-1 rounded-full bg-hud-warning/30 px-2 py-1 text-[0.65rem] uppercase tracking-wide text-hud-warning">
                     ⚙ Performance
-                  </span>
-                )}
-                <span
-                  className={clsx(
-                    "flex items-center gap-1 rounded-full px-2 py-1 text-[0.65rem] uppercase tracking-wide",
-                    processingMode.effective === "enhanced"
-                      ? "bg-cyan-500/20 text-cyan-200"
-                      : "bg-white/10 text-slate-200",
-                  )}
-                >
-                  🎧 {processingBadgeLabel}
-                </span>
-                {processingFallback && (
-                  <span className="flex items-center gap-1 rounded-full bg-white/10 px-2 py-1 text-[0.65rem] uppercase tracking-wide text-slate-200">
-                    ↓ Fallback
                   </span>
                 )}
               </div>

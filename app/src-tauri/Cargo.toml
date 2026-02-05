@@ -39,7 +39,6 @@ ort = { version = "2.0.0-rc.10", optional = true }
 sherpa-rs = { version = "0.6.8", optional = true, features = ["download-binaries"] }
 llama_cpp = { version = "0.3.2", optional = true, default-features = false, features = ["compat"] }
 webrtc-audio-processing = { version = "0.5", optional = true, features = ["bundled"] }
-deep_filter = { version = "0.2.5", optional = true, default-features = false }
 sysinfo = "0.30"
 reqwest = { version = "0.11", default-features = false, features = ["blocking", "rustls-tls"] }
 tar = "0.4"
@@ -62,7 +61,6 @@ vad-silero = ["ort"]
 asr-sherpa = ["sherpa-rs"]
 llama-polish = ["llama_cpp"]
 webrtc-apm = ["webrtc-audio-processing"]
-enhanced-denoise = ["deep_filter"]
 
 [patch.crates-io]
 webrtc-audio-processing-sys = { path = "../vendor/webrtc-audio-processing-sys" }

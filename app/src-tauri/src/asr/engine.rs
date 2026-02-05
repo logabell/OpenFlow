@@ -81,10 +81,15 @@ impl AsrEngine {
         &self.config
     }
 
-    pub fn push_samples(&self, samples: &[f32]) {
+    pub fn push_samples(&self, samples: &[f32]) -> usize {
         let mut buffer = self.buffer.lock();
         buffer.extend_from_slice(samples);
-        Self::truncate_if_needed(&mut buffer);
+        Self::truncate_if_needed(&mut buffer)
+    }
+
+    pub fn take_samples(&self) -> Vec<f32> {
+        let mut buffer = self.buffer.lock();
+        std::mem::take(&mut *buffer)
     }
 
     pub fn reset(&self) {
@@ -92,22 +97,18 @@ impl AsrEngine {
         buffer.clear();
     }
 
-    pub fn pending_samples_len(&self) -> usize {
-        self.buffer.lock().len()
-    }
-
-    pub fn finalize(&self, sample_rate: u32) -> anyhow::Result<Option<RecognitionResult>> {
-        let samples = {
-            let mut guard = self.buffer.lock();
-            if guard.is_empty() {
-                return Ok(None);
-            }
-            std::mem::take(&mut *guard)
-        };
+    pub fn finalize_samples(
+        &self,
+        sample_rate: u32,
+        samples: &[f32],
+    ) -> anyhow::Result<Option<RecognitionResult>> {
+        if samples.is_empty() {
+            return Ok(None);
+        }
 
         let started = Instant::now();
         #[cfg(feature = "asr-sherpa")]
-        let result = self.transcribe_with_sherpa(sample_rate, &samples);
+        let result = self.transcribe_with_sherpa(sample_rate, samples);
 
         #[cfg(not(feature = "asr-sherpa"))]
         let result: anyhow::Result<String> = Ok("local asr disabled".into());
@@ -195,11 +196,13 @@ impl AsrEngine {
         }
     }
 
-    fn truncate_if_needed(buffer: &mut Vec<f32>) {
+    fn truncate_if_needed(buffer: &mut Vec<f32>) -> usize {
         const MAX_SAMPLES: usize = 16_000 * 120;
         if buffer.len() > MAX_SAMPLES {
             let overflow = buffer.len() - MAX_SAMPLES;
             buffer.drain(..overflow);
+            return overflow;
         }
+        0
     }
 }

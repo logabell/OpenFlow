@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+#[cfg(feature = "webrtc-apm")]
 use tracing::warn;
 
 #[cfg(feature = "webrtc-apm")]
@@ -7,36 +7,14 @@ use webrtc_audio_processing::{
     NoiseSuppressionLevel, Processor as WebRtcProcessor, NUM_SAMPLES_PER_FRAME,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum AudioProcessingMode {
-    Standard,
-    Enhanced,
-}
-
-impl Default for AudioProcessingMode {
-    fn default() -> Self {
-        AudioProcessingMode::Standard
-    }
-}
-
 pub struct AudioPreprocessor {
     apm: ApmStage,
-    denoiser: Option<EnhancedStage>,
-    preferred: AudioProcessingMode,
-    performance_override: bool,
 }
 
 impl AudioPreprocessor {
-    pub fn new(mode: AudioProcessingMode) -> Self {
+    pub fn new() -> Self {
         Self {
             apm: ApmStage::new(),
-            denoiser: match mode {
-                AudioProcessingMode::Enhanced => Some(EnhancedStage::new()),
-                AudioProcessingMode::Standard => None,
-            },
-            preferred: mode,
-            performance_override: false,
         }
     }
 
@@ -46,50 +24,6 @@ impl AudioPreprocessor {
         }
 
         self.apm.process(frame);
-
-        if self.performance_override {
-            return;
-        }
-
-        if matches!(self.preferred, AudioProcessingMode::Enhanced) {
-            if self.denoiser.is_none() {
-                self.denoiser = Some(EnhancedStage::new());
-            }
-
-            if let Some(denoiser) = self.denoiser.as_mut() {
-                denoiser.process(frame);
-            }
-        } else {
-            self.denoiser = None;
-        }
-    }
-
-    pub fn set_preferred_mode(&mut self, mode: AudioProcessingMode) {
-        self.preferred = mode;
-        if !matches!(mode, AudioProcessingMode::Enhanced) {
-            self.denoiser = None;
-        }
-    }
-
-    pub fn preferred_mode(&self) -> AudioProcessingMode {
-        self.preferred
-    }
-
-    pub fn effective_mode(&self) -> AudioProcessingMode {
-        if self.performance_override {
-            AudioProcessingMode::Standard
-        } else if matches!(self.preferred, AudioProcessingMode::Enhanced) {
-            AudioProcessingMode::Enhanced
-        } else {
-            AudioProcessingMode::Standard
-        }
-    }
-
-    pub fn set_performance_override(&mut self, enabled: bool) {
-        self.performance_override = enabled;
-        if enabled {
-            self.denoiser = None;
-        }
     }
 }
 
@@ -222,75 +156,6 @@ impl BaselineProcessor {
 
         for sample in frame.iter_mut() {
             *sample = (*sample * self.last_gain).clamp(-1.0, 1.0);
-        }
-    }
-}
-
-#[derive(Debug)]
-enum EnhancedStage {
-    #[cfg(feature = "enhanced-denoise")]
-    Dtln(DtlnBackend),
-    Stub(EnhancedStub),
-}
-
-impl EnhancedStage {
-    fn new() -> Self {
-        #[cfg(feature = "enhanced-denoise")]
-        {
-            if let Some(backend) = DtlnBackend::new() {
-                return EnhancedStage::Dtln(backend);
-            }
-        }
-        EnhancedStage::Stub(EnhancedStub::new())
-    }
-
-    fn process(&mut self, frame: &mut [f32]) {
-        match self {
-            #[cfg(feature = "enhanced-denoise")]
-            EnhancedStage::Dtln(backend) => backend.process(frame),
-            EnhancedStage::Stub(stub) => stub.process(frame),
-        }
-    }
-}
-
-#[cfg(feature = "enhanced-denoise")]
-#[derive(Debug)]
-struct DtlnBackend {
-    // Placeholder for future dtln-rs integration.
-}
-
-#[cfg(feature = "enhanced-denoise")]
-impl DtlnBackend {
-    fn new() -> Option<Self> {
-        // TODO(logan): integrate dtln-rs once model packaging is finalized.
-        warn!("dtln backend requested but not yet implemented; using fallback denoiser.");
-        None
-    }
-
-    fn process(&mut self, frame: &mut [f32]) {
-        let _ = frame;
-    }
-}
-
-#[derive(Debug)]
-struct EnhancedStub {
-    alpha: f32,
-    previous: f32,
-}
-
-impl EnhancedStub {
-    fn new() -> Self {
-        Self {
-            alpha: 0.92,
-            previous: 0.0,
-        }
-    }
-
-    fn process(&mut self, frame: &mut [f32]) {
-        for sample in frame.iter_mut() {
-            let denoised = self.alpha * self.previous + (1.0 - self.alpha) * *sample;
-            self.previous = denoised;
-            *sample = denoised;
         }
     }
 }

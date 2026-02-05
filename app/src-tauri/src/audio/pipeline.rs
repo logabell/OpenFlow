@@ -8,7 +8,6 @@ use tauri::async_runtime::JoinHandle;
 use tracing::warn;
 use tracing::{debug, info};
 
-use super::AudioProcessingMode;
 
 const DEFAULT_SAMPLE_RATE: u32 = 16_000;
 const DEFAULT_FRAME_LEN: usize = 320;
@@ -18,14 +17,12 @@ const DEFAULT_FRAME_INTERVAL: Duration = Duration::from_millis(20);
 #[serde(default, rename_all = "camelCase")]
 pub struct AudioPipelineConfig {
     pub device_id: Option<String>,
-    pub processing_mode: AudioProcessingMode,
 }
 
 impl Default for AudioPipelineConfig {
     fn default() -> Self {
         Self {
             device_id: None,
-            processing_mode: AudioProcessingMode::Standard,
         }
     }
 }

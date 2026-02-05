@@ -7,7 +7,6 @@ const Dashboard = () => {
     toggleSettings,
     hudState,
     models,
-    processingMode,
     startDictation,
     settings,
   } = useAppStore();
@@ -106,11 +105,7 @@ const Dashboard = () => {
           <StatusCard
             title="Audio Processing"
             status="ready"
-            description={
-              processingMode.effective === "enhanced"
-                ? "Enhanced mode active"
-                : "Standard mode active"
-            }
+            description="WebRTC APM active"
           />
           <StatusCard
             title="Text Polish"

@@ -46,7 +46,6 @@ const DebugPanel = ({ onClose }: { onClose: () => void }) => {
     completeDictation,
     models,
     audioDevices,
-    processingMode,
     settings,
   } = useAppStore();
 
@@ -480,12 +479,6 @@ const DebugPanel = ({ onClose }: { onClose: () => void }) => {
                   <span className="text-slate-400">Trigger:</span>
                   <span className="max-w-[170px] truncate font-mono text-sm text-slate-300">
                     {hotkeyTriggerDescription || "(pending)"}
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-400">Audio Mode:</span>
-                  <span className="font-mono text-sm text-slate-300">
-                    {processingMode.effective}
                   </span>
                 </div>
                 <div className="flex justify-between">

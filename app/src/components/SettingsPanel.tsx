@@ -4,7 +4,6 @@ import { useAppStore } from "../state/appStore";
 import type {
   AppSettings,
   AudioDevice,
-  AudioProcessingModeState,
   DownloadLogEntry,
   ModelRecord,
   ModelStateKind,
@@ -82,7 +81,6 @@ const SettingsPanel = () => {
     uninstallPolishModel,
     audioDevices,
     refreshAudioDevices,
-    processingMode,
     downloadLogs,
     clearDownloadLogs,
   } = useAppStore();
@@ -215,7 +213,6 @@ const SettingsPanel = () => {
           <AudioSection
             draft={draft}
             audioDevices={audioDevices}
-            processingMode={processingMode}
             onChange={handleChange}
             onRefresh={refreshAudioDevices}
           />
@@ -749,13 +746,11 @@ const SpeechSection = ({
 const AudioSection = ({
   draft,
   audioDevices,
-  processingMode,
   onChange,
   onRefresh,
 }: {
   draft: AppSettings;
   audioDevices: AudioDevice[];
-  processingMode: AudioProcessingModeState;
   onChange: <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => void;
   onRefresh: () => Promise<void>;
 }) => (
@@ -795,22 +790,6 @@ const AudioSection = ({
         </select>
       </label>
       <label className="flex items-center justify-between gap-3">
-        <span>Processing Mode</span>
-        <select
-          className="w-56 rounded-md bg-slate-900 px-3 py-2"
-          value={draft.processingMode}
-          onChange={(event) =>
-            onChange(
-              "processingMode",
-              event.target.value as AppSettings["processingMode"],
-            )
-          }
-        >
-          <option value="standard">Standard (WebRTC APM)</option>
-          <option value="enhanced">Enhanced (+ dtln denoise)</option>
-        </select>
-      </label>
-      <label className="flex items-center justify-between gap-3">
         <span>VAD Sensitivity</span>
         <select
           className="w-56 rounded-md bg-slate-900 px-3 py-2"
@@ -828,14 +807,7 @@ const AudioSection = ({
         </select>
       </label>
       <p className="text-xs text-slate-400">
-        Standard mode runs the WebRTC audio processing chain. Enhanced mode adds the
-        heavier denoiser; we automatically fall back to Standard if the system is under
-        load. Currently running: <span className="font-medium text-slate-200">
-          {processingMode.effective === "enhanced" ? "Enhanced" : "Standard"}
-        </span>
-        {processingMode.preferred !== processingMode.effective
-          ? " (temporary fallback)."
-          : "."}
+        Audio processing uses the WebRTC APM chain automatically.
       </p>
     </div>
   </section>

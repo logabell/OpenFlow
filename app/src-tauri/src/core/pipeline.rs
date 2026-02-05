@@ -10,9 +10,7 @@ use tauri::AppHandle;
 use tracing::{info, warn};
 
 use crate::asr::{AsrConfig, AsrEngine, RecognitionResult};
-use crate::audio::{
-    AudioEvent, AudioPipeline, AudioPipelineConfig, AudioPreprocessor, AudioProcessingMode,
-};
+use crate::audio::{AudioEvent, AudioPipeline, AudioPipelineConfig, AudioPreprocessor};
 use crate::core::events;
 use crate::llm::{AutocleanMode, AutocleanService};
 #[cfg(debug_assertions)]
@@ -26,6 +24,48 @@ struct DiagnosticsState {
     rms_sum: f32,
     peak_max: f32,
     vad: Option<VadObservation>,
+}
+
+const VAD_MIN_SPEECH_MS: u64 = 350;
+const VAD_PRE_ROLL_MS: u64 = 200;
+const VAD_POST_ROLL_MS: u64 = 500;
+const VAD_MAX_TRAILING_SILENCE_MS: u64 = 600;
+
+#[derive(Debug, Default)]
+struct VadTrimState {
+    total_samples: usize,
+    buffer_start: usize,
+    first_active: Option<usize>,
+    last_active: Option<usize>,
+    active_samples: usize,
+}
+
+impl VadTrimState {
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    fn record(&mut self, decision: VadDecision, frame_samples: usize) {
+        let start = self.total_samples;
+        let end = start.saturating_add(frame_samples);
+
+        if matches!(decision, VadDecision::Active) {
+            if self.first_active.is_none() {
+                self.first_active = Some(start);
+            }
+            self.last_active = Some(end);
+            self.active_samples = self.active_samples.saturating_add(frame_samples);
+        }
+
+        self.total_samples = end;
+    }
+
+    fn note_buffer_drop(&mut self, dropped: usize) {
+        if dropped == 0 {
+            return;
+        }
+        self.buffer_start = self.buffer_start.saturating_add(dropped);
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -70,6 +110,7 @@ struct SpeechPipelineInner {
     preprocessor: Mutex<AudioPreprocessor>,
     vad: Mutex<VoiceActivityDetector>,
     vad_default_hangover: Mutex<Duration>,
+    vad_trim: Mutex<VadTrimState>,
     asr: AsrEngine,
     autoclean: AutocleanService,
     injector: OutputInjector,
@@ -89,7 +130,7 @@ impl SpeechPipeline {
         vad_config: VadConfig,
         asr_config: AsrConfig,
     ) -> Self {
-        let preprocessor = AudioPreprocessor::new(audio_config.processing_mode);
+        let preprocessor = AudioPreprocessor::new();
         let audio = AudioPipeline::spawn(audio_config);
         let vad = VoiceActivityDetector::new(vad_config.clone());
         let inner = Arc::new(SpeechPipelineInner {
@@ -97,6 +138,7 @@ impl SpeechPipeline {
             preprocessor: Mutex::new(preprocessor),
             vad: Mutex::new(vad),
             vad_default_hangover: Mutex::new(vad_config.hangover),
+            vad_trim: Mutex::new(VadTrimState::default()),
             asr: AsrEngine::new(asr_config),
             autoclean: AutocleanService::new(),
             injector: OutputInjector::new(),
@@ -117,7 +159,6 @@ impl SpeechPipeline {
 
         SpeechPipelineInner::start_audio_loop(&inner);
         SpeechPipelineInner::start_cpu_sampler(&inner);
-        inner.emit_processing_mode(None);
 
         Self { inner }
     }
@@ -141,10 +182,6 @@ impl SpeechPipeline {
 
     pub fn set_vad_config(&self, config: VadConfig) {
         self.inner.set_vad_config(config);
-    }
-
-    pub fn set_processing_mode(&self, mode: AudioProcessingMode) {
-        self.inner.set_processing_mode(mode)
     }
 
     pub fn set_paste_shortcut(&self, shortcut: PasteShortcut) {
@@ -230,9 +267,18 @@ impl SpeechPipelineInner {
 
                 self.record_diagnostics(&samples, vad_observation);
 
+                {
+                    let mut trim = self.vad_trim.lock();
+                    trim.record(vad_observation.decision, samples.len());
+                }
+
                 // Always buffer audio while listening. VAD is used for diagnostics
-                // and (later) trimming, but shouldn't block push-to-talk dictation.
-                self.asr.push_samples(&samples);
+                // and trimming, but shouldn't block push-to-talk dictation.
+                let dropped = self.asr.push_samples(&samples);
+                if dropped > 0 {
+                    let mut trim = self.vad_trim.lock();
+                    trim.note_buffer_drop(dropped);
+                }
                 Ok(())
             }
             AudioEvent::Stopped => {
@@ -380,19 +426,7 @@ impl SpeechPipelineInner {
         *default = config.hangover;
     }
 
-    fn set_processing_mode(&self, mode: AudioProcessingMode) {
-        {
-            let mut preprocessor = self.preprocessor.lock();
-            preprocessor.set_preferred_mode(mode);
-        }
-        self.emit_processing_mode(Some("user"));
-    }
-
     fn set_performance_override(&self, enabled: bool) {
-        {
-            let mut preprocessor = self.preprocessor.lock();
-            preprocessor.set_performance_override(enabled);
-        }
         {
             let mut vad = self.vad.lock();
             let default = *self.vad_default_hangover.lock();
@@ -402,20 +436,6 @@ impl SpeechPipelineInner {
                 vad.set_hangover(default);
             }
         }
-        let reason = if enabled {
-            Some("performance-fallback")
-        } else {
-            Some("performance-recovered")
-        };
-        self.emit_processing_mode(reason);
-    }
-
-    fn emit_processing_mode(&self, reason: Option<&str>) {
-        let (preferred, effective) = {
-            let pre = self.preprocessor.lock();
-            (pre.preferred_mode(), pre.effective_mode())
-        };
-        events::emit_audio_processing_mode(&self.app, preferred, effective, reason);
     }
 
     fn reset_recognizer(&self) {
@@ -427,6 +447,11 @@ impl SpeechPipelineInner {
         vad.reset();
     }
 
+    fn reset_trim_state(&self) {
+        let mut trim = self.vad_trim.lock();
+        trim.reset();
+    }
+
     fn set_paste_shortcut(&self, shortcut: PasteShortcut) {
         self.injector.set_paste_shortcut(shortcut);
     }
@@ -435,11 +460,59 @@ impl SpeechPipelineInner {
         self.asr.config().clone()
     }
 
+    fn log_no_speech(&self, message: &str) {
+        info!("{message}");
+        #[cfg(debug_assertions)]
+        logs::push_log(message.to_string());
+    }
+
+    fn compute_trim_range(
+        &self,
+        sample_rate: u32,
+        buffer_len: usize,
+    ) -> Result<(usize, usize), &'static str> {
+        if buffer_len == 0 {
+            return Err("No audio captured; skipping ASR");
+        }
+
+        let trim = self.vad_trim.lock();
+        let min_samples = ((VAD_MIN_SPEECH_MS * sample_rate as u64) / 1000) as usize;
+        if trim.first_active.is_none() || trim.active_samples < min_samples {
+            return Err("No speech detected; skipping ASR");
+        }
+
+        let first = trim.first_active.unwrap_or(0);
+        let last = trim.last_active.unwrap_or(first);
+        let pre_roll = ((VAD_PRE_ROLL_MS * sample_rate as u64) / 1000) as usize;
+        let post_roll = ((VAD_POST_ROLL_MS * sample_rate as u64) / 1000) as usize;
+        let keep_tail = ((VAD_MAX_TRAILING_SILENCE_MS * sample_rate as u64) / 1000) as usize;
+
+        let start_abs = first.saturating_sub(pre_roll);
+        let mut end_abs = last.saturating_add(post_roll);
+
+        let buffer_start = trim.buffer_start;
+        let buffer_end = buffer_start.saturating_add(buffer_len);
+
+        let trailing_silence = buffer_end.saturating_sub(last);
+        if trailing_silence <= keep_tail {
+            end_abs = buffer_end;
+        }
+        let start = start_abs.max(buffer_start);
+        let end = end_abs.min(buffer_end);
+
+        if end <= start {
+            return Err("No speech detected; skipping ASR");
+        }
+
+        Ok((start - buffer_start, end - buffer_start))
+    }
+
     fn set_listening(&self, active: bool) {
         if active {
             self.listening.store(true, Ordering::SeqCst);
             self.reset_recognizer();
             self.reset_vad();
+            self.reset_trim_state();
             return;
         }
 
@@ -447,18 +520,34 @@ impl SpeechPipelineInner {
         if !was_listening {
             self.reset_recognizer();
             self.reset_vad();
+            self.reset_trim_state();
             return;
         }
 
         let sample_rate = self.audio.sample_rate();
-        let pending = self.asr.pending_samples_len();
+        let samples = self.asr.take_samples();
+        let pending = samples.len();
         #[cfg(debug_assertions)]
         logs::push_log(format!(
             "Finalizing dictation (samples={} rate={}Hz)",
             pending, sample_rate
         ));
 
-        match self.asr.finalize(sample_rate) {
+        let trim_range = self.compute_trim_range(sample_rate, samples.len());
+        let (trim_start, trim_end) = match trim_range {
+            Ok(range) => range,
+            Err(message) => {
+                self.log_no_speech(message);
+                self.reset_recognizer();
+                self.reset_vad();
+                self.reset_trim_state();
+                return;
+            }
+        };
+
+        let trimmed_samples = &samples[trim_start..trim_end];
+
+        match self.asr.finalize_samples(sample_rate, trimmed_samples) {
             Ok(Some(result)) => {
                 if result.text.trim().is_empty() {
                     events::emit_transcription_error(&self.app, "ASR returned empty transcript");
@@ -468,12 +557,7 @@ impl SpeechPipelineInner {
                 self.consume_result(result);
             }
             Ok(None) => {
-                events::emit_transcription_error(
-                    &self.app,
-                    "No audio captured; nothing to transcribe",
-                );
-                #[cfg(debug_assertions)]
-                logs::push_log("No audio captured; nothing to transcribe".to_string());
+                self.log_no_speech("No speech detected; skipping ASR");
             }
             Err(error) => {
                 events::emit_transcription_error(&self.app, &error.to_string());
@@ -483,6 +567,7 @@ impl SpeechPipelineInner {
         }
         self.reset_recognizer();
         self.reset_vad();
+        self.reset_trim_state();
     }
 
     fn consume_result(&self, recognition: RecognitionResult) {
