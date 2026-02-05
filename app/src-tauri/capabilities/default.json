@@ -1,0 +1,34 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default capability for the main UI",
+  "windows": ["main", "status-overlay"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    {
+      "identifier": "core:event:allow-listen",
+      "allow": [
+        "hud-state",
+        "performance-warning",
+        "performance-recovered",
+        "audio-processing-mode",
+        "secure-field-blocked",
+        "autoclean-mode",
+        "open-settings",
+        "transcription-output",
+        "performance-metrics",
+        "model-status",
+        "open-logs",
+        "logs-updated",
+        "hotkey-registered",
+        "hotkey-unregistered",
+        "wayland-warning"
+      ]
+    },
+    "global-shortcut:default",
+    "core:tray:default",
+    "core:menu:default",
+    "core:window:default"
+  ]
+}

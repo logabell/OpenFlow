@@ -1,0 +1,73 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/schema.json",
+  "productName": "Push-to-Talk STT",
+  "version": "0.1.0",
+  "identifier": "com.pushtotalk.stt",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "yarn dev",
+    "beforeBuildCommand": "yarn build"
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["appimage", "deb"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.png"
+    ],
+    "category": "Utility",
+    "shortDescription": "Push-to-Talk Speech-to-Text",
+    "longDescription": "A speech-to-text dictation assistant with push-to-talk gesture. Captures audio, transcribes locally, and pastes polished text into active fields.",
+    "linux": {
+      "appimage": {
+        "bundleMediaFramework": true
+      },
+      "deb": {
+        "depends": ["libasound2"]
+      }
+    }
+  },
+  "app": {
+    "trayIcon": {
+      "iconPath": "icons/tray-icon.png",
+      "menuOnLeftClick": true
+    },
+    "windows": [
+      {
+        "title": "Push-to-Talk STT",
+        "label": "main",
+        "decorations": true,
+        "transparent": false,
+        "center": true,
+        "visible": true,
+        "skipTaskbar": false,
+        "maximized": false,
+        "resizable": true,
+        "width": 800,
+        "height": 600
+      },
+      {
+        "title": "",
+        "label": "status-overlay",
+        "url": "overlay.html",
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "visible": false,
+        "skipTaskbar": true,
+        "resizable": false,
+        "width": 200,
+        "height": 200,
+        "x": 0,
+        "y": 0,
+        "focus": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  }
+}

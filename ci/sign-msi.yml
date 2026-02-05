@@ -1,0 +1,11 @@
+name: Sign MSI
+
+on:
+  workflow_dispatch:
+
+jobs:
+  sign:
+    runs-on: windows-latest
+    steps:
+      - name: Placeholder
+        run: echo "TODO: integrate code signing once certificates are available"

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Push-to-Talk STT
+Comment=Speech-to-text dictation assistant with push-to-talk gesture
+Exec=push-to-talk-stt
+Icon=push-to-talk-stt
+Terminal=false
+Type=Application
+Categories=Utility;Audio;Accessibility;
+Keywords=speech;dictation;transcription;voice;audio;stt;
+StartupNotify=true
+StartupWMClass=push-to-talk-stt
