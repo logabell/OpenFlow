@@ -1,5 +1,7 @@
-use std::fs::{self, File};
-use std::path::{Path, PathBuf};
+use std::{
+    fs::{self, File},
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, Result};
 use directories::ProjectDirs;
@@ -8,11 +10,12 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "kebab-case")]
 pub enum ModelKind {
-    ZipformerAsr,
-    Whisper,
+    WhisperOnnx,
+    WhisperCt2,
     Parakeet,
-    PolishLlm,
     Vad,
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -56,11 +59,11 @@ impl ModelAsset {
     #[must_use]
     fn kind_path(&self) -> String {
         match self.kind {
-            ModelKind::ZipformerAsr => "asr/zipformer".into(),
-            ModelKind::Whisper => "asr/whisper".into(),
+            ModelKind::WhisperOnnx => "asr/whisper-onnx".into(),
+            ModelKind::WhisperCt2 => "asr/whisper-ct2".into(),
             ModelKind::Parakeet => "asr/parakeet".into(),
-            ModelKind::PolishLlm => "polish".into(),
             ModelKind::Vad => "vad".into(),
+            ModelKind::Unknown => "legacy".into(),
         }
     }
 
@@ -86,11 +89,30 @@ impl ModelAsset {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct ModelSource {
+pub struct ModelArchiveSource {
     pub uri: String,
     pub archive_format: ArchiveFormat,
     #[serde(default)]
     pub strip_prefix_components: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelHfSource {
+    pub repo: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
+    #[serde(default)]
+    pub include: Vec<String>,
+    #[serde(default)]
+    pub exclude: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum ModelSource {
+    Archive(ModelArchiveSource),
+    HfRepo(ModelHfSource),
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -118,6 +140,7 @@ impl ModelManager {
             assets: vec![],
         };
         manager.load_manifest()?;
+        manager.cleanup_legacy_assets();
         manager.register_defaults();
         manager.save()?;
         Ok(manager)
@@ -151,14 +174,18 @@ impl ModelManager {
         self.assets.iter_mut().find(|asset| asset.name == name)
     }
 
+    pub fn asset_by_name(&self, name: &str) -> Option<&ModelAsset> {
+        self.assets.iter().find(|asset| asset.name == name)
+    }
+
     pub fn save(&self) -> Result<()> {
         let manifest = File::create(&self.manifest).context("create model manifest")?;
         serde_json::to_writer_pretty(manifest, &self.assets).context("write model manifest")?;
         Ok(())
     }
 
-    pub fn uninstall(&mut self, kind: &ModelKind) -> Result<Option<ModelAsset>> {
-        if let Some(asset) = self.assets.iter_mut().find(|asset| &asset.kind == kind) {
+    pub fn uninstall_by_name(&mut self, name: &str) -> Result<Option<ModelAsset>> {
+        if let Some(asset) = self.assets.iter_mut().find(|asset| asset.name == name) {
             let path = asset.path(&self.root);
             if path.exists() {
                 fs::remove_dir_all(&path)
@@ -217,6 +244,24 @@ impl ModelManager {
             }
         }
     }
+
+    fn cleanup_legacy_assets(&mut self) {
+        let legacy_dir = self.root.join("asr/zipformer");
+        if legacy_dir.exists() {
+            let _ = fs::remove_dir_all(&legacy_dir);
+        }
+
+        self.assets.retain(|asset| {
+            if matches!(asset.kind, ModelKind::Unknown) || asset.name.contains("zipformer") {
+                let path = asset.path(&self.root);
+                if path.exists() {
+                    let _ = fs::remove_dir_all(&path);
+                }
+                return false;
+            }
+            true
+        });
+    }
 }
 
 fn resolve_model_dir() -> Result<PathBuf> {
@@ -228,74 +273,200 @@ fn resolve_model_dir() -> Result<PathBuf> {
 }
 
 fn default_assets() -> Vec<ModelAsset> {
+    let mut assets = Vec::new();
+    assets.extend(default_whisper_ct2_assets());
+    assets.extend(default_whisper_onnx_assets());
+    assets.push(ModelAsset {
+        kind: ModelKind::Parakeet,
+        name: "parakeet-tdt-0.6b-v2-int8".into(),
+        version: "main".into(),
+        checksum: None,
+        size_bytes: 0,
+        status: ModelStatus::NotInstalled,
+        source: Some(ModelSource::Archive(ModelArchiveSource {
+            uri: "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8.tar.bz2"
+                .into(),
+            archive_format: ArchiveFormat::TarBz2,
+            strip_prefix_components: 0,
+        })),
+    });
+    assets.push(ModelAsset {
+        kind: ModelKind::Vad,
+        name: "silero-vad-onnx".into(),
+        version: "v6".into(),
+        checksum: None,
+        size_bytes: 0,
+        status: ModelStatus::NotInstalled,
+        source: Some(ModelSource::Archive(ModelArchiveSource {
+            uri: "https://raw.githubusercontent.com/snakers4/silero-vad/master/src/silero_vad/data/silero_vad.onnx".into(),
+            archive_format: ArchiveFormat::File,
+            strip_prefix_components: 0,
+        })),
+    });
+    assets
+}
+
+fn default_whisper_ct2_assets() -> Vec<ModelAsset> {
+    let mut assets = Vec::new();
+    let include = ct2_include_patterns();
+
+    let sizes = [
+        ("tiny", true),
+        ("base", true),
+        ("small", true),
+        ("medium", true),
+        ("large-v3", false),
+        ("large-v3-turbo", false),
+    ];
+
+    for (size, has_en) in sizes {
+        let repo = match size {
+            "large-v3" => "Systran/faster-whisper-large-v3".to_string(),
+            "large-v3-turbo" => "deepdml/faster-whisper-large-v3-turbo-ct2".to_string(),
+            _ => format!("Systran/faster-whisper-{size}"),
+        };
+        assets.push(ModelAsset {
+            kind: ModelKind::WhisperCt2,
+            name: format!("whisper-ct2-{size}"),
+            version: "main".into(),
+            checksum: None,
+            size_bytes: 0,
+            status: ModelStatus::NotInstalled,
+            source: Some(ModelSource::HfRepo(ModelHfSource {
+                repo,
+                revision: None,
+                include: include.clone(),
+                exclude: Vec::new(),
+            })),
+        });
+
+        if has_en {
+            assets.push(ModelAsset {
+                kind: ModelKind::WhisperCt2,
+                name: format!("whisper-ct2-{size}-en"),
+                version: "main".into(),
+                checksum: None,
+                size_bytes: 0,
+                status: ModelStatus::NotInstalled,
+                source: Some(ModelSource::HfRepo(ModelHfSource {
+                    repo: format!("Systran/faster-whisper-{size}.en"),
+                    revision: None,
+                    include: include.clone(),
+                    exclude: Vec::new(),
+                })),
+            });
+        }
+    }
+
+    assets
+}
+
+fn default_whisper_onnx_assets() -> Vec<ModelAsset> {
+    let mut assets = Vec::new();
+    let float_include = onnx_float_include_patterns();
+    let int8_include = onnx_int8_include_patterns();
+    let float_exclude = vec!["**/*.int8.onnx".to_string()];
+
+    let sizes = [
+        ("tiny", true),
+        ("base", true),
+        ("small", true),
+        ("medium", true),
+        ("large-v3", false),
+        ("large-v3-turbo", false),
+    ];
+
+    for (size, has_en) in sizes {
+        let repo = match size {
+            "large-v3" => "csukuangfj/sherpa-onnx-whisper-large-v3".to_string(),
+            "large-v3-turbo" => "csukuangfj/sherpa-onnx-whisper-turbo".to_string(),
+            _ => format!("csukuangfj/sherpa-onnx-whisper-{size}"),
+        };
+
+        assets.push(build_onnx_whisper_asset(
+            format!("whisper-onnx-{size}-float"),
+            repo.clone(),
+            float_include.clone(),
+            float_exclude.clone(),
+        ));
+        assets.push(build_onnx_whisper_asset(
+            format!("whisper-onnx-{size}-int8"),
+            repo.clone(),
+            int8_include.clone(),
+            Vec::new(),
+        ));
+
+        if has_en {
+            let repo_en = format!("csukuangfj/sherpa-onnx-whisper-{size}.en");
+            assets.push(build_onnx_whisper_asset(
+                format!("whisper-onnx-{size}-en-float"),
+                repo_en.clone(),
+                float_include.clone(),
+                float_exclude.clone(),
+            ));
+            assets.push(build_onnx_whisper_asset(
+                format!("whisper-onnx-{size}-en-int8"),
+                repo_en,
+                int8_include.clone(),
+                Vec::new(),
+            ));
+        }
+    }
+
+    assets
+}
+
+fn build_onnx_whisper_asset(
+    name: String,
+    repo: String,
+    include: Vec<String>,
+    exclude: Vec<String>,
+) -> ModelAsset {
+    ModelAsset {
+        kind: ModelKind::WhisperOnnx,
+        name,
+        version: "main".into(),
+        checksum: None,
+        size_bytes: 0,
+        status: ModelStatus::NotInstalled,
+        source: Some(ModelSource::HfRepo(ModelHfSource {
+            repo,
+            revision: None,
+            include,
+            exclude,
+        })),
+    }
+}
+
+fn ct2_include_patterns() -> Vec<String> {
     vec![
-        ModelAsset {
-            kind: ModelKind::ZipformerAsr,
-            name: "sherpa-onnx-zipformer-small-en".into(),
-            version: "2023-06-26".into(),
-            checksum: None,
-            size_bytes: 0,
-            status: ModelStatus::NotInstalled,
-            source: Some(ModelSource {
-                uri: "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-zipformer-small-en-2023-06-26.tar.bz2"
-                    .into(),
-                archive_format: ArchiveFormat::TarBz2,
-                strip_prefix_components: 0,
-            }),
-        },
-        ModelAsset {
-            kind: ModelKind::Whisper,
-            name: "sherpa-onnx-whisper-tiny".into(),
-            version: "tiny".into(),
-            checksum: None,
-            size_bytes: 0,
-            status: ModelStatus::NotInstalled,
-            source: Some(ModelSource {
-                uri: "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-whisper-tiny.tar.bz2"
-                    .into(),
-                archive_format: ArchiveFormat::TarBz2,
-                strip_prefix_components: 0,
-            }),
-        },
-        ModelAsset {
-            kind: ModelKind::Parakeet,
-            name: "sherpa-onnx-parakeet-tdt-0.6b-v2-int8".into(),
-            version: "0.6b-v2-int8".into(),
-            checksum: None,
-            size_bytes: 0,
-            status: ModelStatus::NotInstalled,
-            source: Some(ModelSource {
-                uri: "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8.tar.bz2"
-                    .into(),
-                archive_format: ArchiveFormat::TarBz2,
-                strip_prefix_components: 0,
-            }),
-        },
-        ModelAsset {
-            kind: ModelKind::Vad,
-            name: "silero-vad-onnx".into(),
-            version: "v6".into(),
-            checksum: None,
-            size_bytes: 0,
-            status: ModelStatus::NotInstalled,
-            source: Some(ModelSource {
-                uri: "https://raw.githubusercontent.com/snakers4/silero-vad/master/src/silero_vad/data/silero_vad.onnx".into(),
-                archive_format: ArchiveFormat::File,
-                strip_prefix_components: 0,
-            }),
-        },
-        ModelAsset {
-            kind: ModelKind::PolishLlm,
-            name: "tiny-llama-1.1b-chat-q4_k_m".into(),
-            version: "2024-01-01".into(),
-            checksum: None,
-            size_bytes: 0,
-            status: ModelStatus::NotInstalled,
-            source: Some(ModelSource {
-                uri: "https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF/resolve/main/TinyLlama-1.1B-Chat-v1.0-Q4_K_M.gguf?download=1".into(),
-                archive_format: ArchiveFormat::File,
-                strip_prefix_components: 0,
-            }),
-        },
+        "**/*.bin".into(),
+        "**/*.json".into(),
+        "**/*.txt".into(),
+        "**/*.model".into(),
+        "**/*.vocab".into(),
+        "**/*.merges".into(),
+        "**/*.spm".into(),
+        "**/*.tiktoken".into(),
+        "**/*.npz".into(),
+        "**/*.npy".into(),
+    ]
+}
+
+fn onnx_float_include_patterns() -> Vec<String> {
+    vec![
+        "**/*.onnx".into(),
+        "**/*.weights".into(),
+        "**/*.txt".into(),
+        "**/*.json".into(),
+    ]
+}
+
+fn onnx_int8_include_patterns() -> Vec<String> {
+    vec![
+        "**/*.int8.onnx".into(),
+        "**/*.weights".into(),
+        "**/*.txt".into(),
+        "**/*.json".into(),
     ]
 }

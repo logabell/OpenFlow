@@ -14,7 +14,7 @@ mod vad;
 use anyhow::anyhow;
 use audio::{list_input_devices, AudioDeviceInfo};
 use core::{app_state::AppState, pipeline::OutputMode, settings::FrontendSettings};
-use models::{ModelAsset, ModelKind};
+use models::ModelAsset;
 use tauri::{AppHandle, Manager};
 use tracing::metadata::LevelFilter;
 
@@ -126,99 +126,24 @@ async fn list_models(state: tauri::State<'_, AppState>) -> tauri::Result<Vec<Mod
 }
 
 #[tauri::command]
-async fn install_zipformer_asr(
+async fn install_model_asset(
     app: AppHandle,
     state: tauri::State<'_, AppState>,
+    name: String,
 ) -> tauri::Result<()> {
     state
-        .queue_model_download(&app, ModelKind::ZipformerAsr)
+        .queue_model_download(&app, &name)
         .map_err(tauri::Error::from)
 }
 
 #[tauri::command]
-async fn install_whisper_asr(
+async fn uninstall_model_asset(
     app: AppHandle,
     state: tauri::State<'_, AppState>,
+    name: String,
 ) -> tauri::Result<()> {
     state
-        .queue_model_download(&app, ModelKind::Whisper)
-        .map_err(tauri::Error::from)
-}
-
-#[tauri::command]
-async fn install_parakeet_asr(
-    app: AppHandle,
-    state: tauri::State<'_, AppState>,
-) -> tauri::Result<()> {
-    state
-        .queue_model_download(&app, ModelKind::Parakeet)
-        .map_err(tauri::Error::from)
-}
-
-#[tauri::command]
-async fn install_vad_model(app: AppHandle, state: tauri::State<'_, AppState>) -> tauri::Result<()> {
-    state
-        .queue_model_download(&app, ModelKind::Vad)
-        .map_err(tauri::Error::from)
-}
-
-#[tauri::command]
-async fn install_polish_model(
-    app: AppHandle,
-    state: tauri::State<'_, AppState>,
-) -> tauri::Result<()> {
-    state
-        .queue_model_download(&app, ModelKind::PolishLlm)
-        .map_err(tauri::Error::from)
-}
-
-#[tauri::command]
-async fn uninstall_zipformer_asr(
-    app: AppHandle,
-    state: tauri::State<'_, AppState>,
-) -> tauri::Result<()> {
-    state
-        .uninstall_model(&app, ModelKind::ZipformerAsr)
-        .map_err(tauri::Error::from)
-}
-
-#[tauri::command]
-async fn uninstall_whisper_asr(
-    app: AppHandle,
-    state: tauri::State<'_, AppState>,
-) -> tauri::Result<()> {
-    state
-        .uninstall_model(&app, ModelKind::Whisper)
-        .map_err(tauri::Error::from)
-}
-
-#[tauri::command]
-async fn uninstall_parakeet_asr(
-    app: AppHandle,
-    state: tauri::State<'_, AppState>,
-) -> tauri::Result<()> {
-    state
-        .uninstall_model(&app, ModelKind::Parakeet)
-        .map_err(tauri::Error::from)
-}
-
-#[tauri::command]
-async fn uninstall_vad_model(
-    app: AppHandle,
-    state: tauri::State<'_, AppState>,
-) -> tauri::Result<()> {
-    state
-        .uninstall_model(&app, ModelKind::Vad)
-        .map_err(tauri::Error::from)
-}
-
-#[tauri::command]
-async fn uninstall_polish_model(
-    app: AppHandle,
-    state: tauri::State<'_, AppState>,
-) -> tauri::Result<()> {
-    state
-        .uninstall_model(&app, ModelKind::PolishLlm)
+        .uninstall_model(&app, &name)
         .map_err(tauri::Error::from)
 }
 
@@ -233,35 +158,6 @@ async fn secure_field_blocked(
     state: tauri::State<'_, AppState>,
 ) -> tauri::Result<()> {
     state.secure_blocked(&app);
-    Ok(())
-}
-
-#[tauri::command]
-async fn simulate_performance(
-    state: tauri::State<'_, AppState>,
-    latency_ms: u64,
-    cpu_percent: f32,
-) -> tauri::Result<()> {
-    state
-        .simulate_performance(latency_ms, cpu_percent)
-        .map_err(tauri::Error::from)?;
-    Ok(())
-}
-
-#[tauri::command]
-async fn simulate_transcription(
-    app: AppHandle,
-    state: tauri::State<'_, AppState>,
-    raw_text: String,
-    latency_ms: Option<u64>,
-    cpu_percent: Option<f32>,
-) -> tauri::Result<()> {
-    let latency = latency_ms.unwrap_or(1800);
-    let cpu = cpu_percent.unwrap_or(65.0);
-
-    state
-        .simulate_transcription(&app, &raw_text, latency, cpu)
-        .map_err(tauri::Error::from)?;
     Ok(())
 }
 
@@ -309,20 +205,10 @@ fn main() {
             mark_dictation_processing,
             complete_dictation,
             secure_field_blocked,
-            simulate_performance,
-            simulate_transcription,
             set_output_mode,
             list_models,
-            install_zipformer_asr,
-            install_whisper_asr,
-            install_parakeet_asr,
-            install_vad_model,
-            install_polish_model,
-            uninstall_zipformer_asr,
-            uninstall_whisper_asr,
-            uninstall_parakeet_asr,
-            uninstall_vad_model,
-            uninstall_polish_model,
+            install_model_asset,
+            uninstall_model_asset,
             list_audio_devices,
             #[cfg(debug_assertions)]
             get_logs
@@ -337,7 +223,6 @@ fn main() {
                 }
                 #[cfg(debug_assertions)]
                 {
-                    crate::core::dev_simulator::start(&handle);
                     crate::output::logs::initialize(&handle);
                 }
             }

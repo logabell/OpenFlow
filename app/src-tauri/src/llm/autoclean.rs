@@ -1,14 +1,11 @@
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-use super::polish::PolishEngine;
-
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum AutocleanMode {
     Off,
     Fast,
-    Polish,
 }
 
 impl Default for AutocleanMode {
@@ -45,7 +42,6 @@ impl TierOneRuleSet {
 pub struct AutocleanService {
     tier_one: TierOneRuleSet,
     mode: std::sync::Mutex<AutocleanMode>,
-    polisher: std::sync::Mutex<Option<PolishEngine>>,
 }
 
 impl AutocleanService {
@@ -53,20 +49,12 @@ impl AutocleanService {
         Self {
             tier_one: TierOneRuleSet::new(),
             mode: std::sync::Mutex::new(AutocleanMode::Fast),
-            polisher: std::sync::Mutex::new(PolishEngine::from_env().ok()),
         }
     }
 
     pub fn set_mode(&self, mode: AutocleanMode) {
         if let Ok(mut guard) = self.mode.lock() {
             *guard = mode;
-        }
-        if matches!(mode, AutocleanMode::Polish) {
-            if let Ok(mut guard) = self.polisher.lock() {
-                if guard.is_none() {
-                    *guard = PolishEngine::from_env().ok();
-                }
-            }
         }
     }
 
@@ -79,13 +67,6 @@ impl AutocleanService {
         match mode {
             AutocleanMode::Off => text.to_string(),
             AutocleanMode::Fast => self.tier_one.apply(text),
-            AutocleanMode::Polish => {
-                let fast = self.tier_one.apply(text);
-                let polished = self.polisher.lock().ok().and_then(|mut guard| {
-                    guard.as_mut().and_then(|engine| engine.polish(&fast).ok())
-                });
-                polished.unwrap_or(fast)
-            }
         }
     }
 }
@@ -106,15 +87,6 @@ mod tests {
         service.set_mode(AutocleanMode::Fast);
         let cleaned = service.clean(" um hello  world  ");
         assert_eq!(cleaned, "Hello world.");
-    }
-
-    #[test]
-    fn polish_without_engine_falls_back() {
-        std::env::remove_var("LLAMA_POLISH_CMD");
-        let service = AutocleanService::new();
-        service.set_mode(AutocleanMode::Polish);
-        let cleaned = service.clean(" test phrase");
-        assert_eq!(cleaned, "Test phrase.");
     }
 }
 

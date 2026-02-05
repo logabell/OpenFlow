@@ -18,7 +18,7 @@ use super::{
 
 #[derive(Debug, Clone)]
 pub struct ModelDownloadJob {
-    pub kind: ModelKind,
+    pub asset_name: String,
 }
 
 #[derive(Debug)]
@@ -67,12 +67,14 @@ fn worker_loop(
             };
 
             let result = guard.assets_mut().into_iter().find_map(|asset| {
-                if asset.kind != job.kind
-                    || !matches!(
-                        asset.status,
-                        ModelStatus::NotInstalled | ModelStatus::Error(_)
-                    )
-                {
+                if asset.name != job.asset_name {
+                    return None;
+                }
+
+                if !matches!(
+                    asset.status,
+                    ModelStatus::NotInstalled | ModelStatus::Error(_)
+                ) {
                     return None;
                 }
 
@@ -111,9 +113,15 @@ fn worker_loop(
         };
 
         match download_and_extract_with_progress(&plan, |progress: DownloadProgress| {
-            on_progress(&manager, &app, &asset_name, progress.downloaded, progress.total);
+            on_progress(
+                &manager,
+                &app,
+                &asset_name,
+                progress.downloaded,
+                progress.total,
+            );
         }) {
-            Ok(outcome) => on_download_success(&manager, &app, job.kind, &asset_name, &outcome),
+            Ok(outcome) => on_download_success(&manager, &app, &asset_name, &outcome),
             Err(error) => on_download_failure(&manager, &app, &asset_name, error),
         }
     }
@@ -122,7 +130,6 @@ fn worker_loop(
 fn on_download_success(
     manager: &Arc<Mutex<ModelManager>>,
     app: &AppHandle,
-    kind: ModelKind,
     asset_name: &str,
     outcome: &DownloadOutcome,
 ) {
@@ -136,8 +143,8 @@ fn on_download_success(
 
         if let Some(asset) = guard.asset_by_name_mut(asset_name) {
             let extracted_size = total_size(&outcome.final_path);
-            match kind {
-                ModelKind::ZipformerAsr | ModelKind::Whisper | ModelKind::Parakeet => {
+            match asset.kind {
+                ModelKind::WhisperOnnx | ModelKind::Parakeet => {
                     if let Some(tokens) = find_tokens_file(&outcome.final_path) {
                         let _ = asset.update_from_file(tokens);
                     }
@@ -147,21 +154,19 @@ fn on_download_success(
                         let _ = asset.update_from_file(model);
                     }
                 }
-                ModelKind::PolishLlm => {
-                    if let Some(model) = find_first_with_extension(&outcome.final_path, "gguf") {
-                        let _ = asset.update_from_file(model);
-                    }
-                }
+                _ => {}
             }
 
             let recorded_size = if extracted_size > 0 {
                 extracted_size
             } else {
-                outcome.archive_size_bytes
+                outcome.total_size_bytes
             };
             asset.set_size_bytes(recorded_size);
             if asset.checksum.is_none() {
-                asset.set_checksum(Some(outcome.checksum.clone()));
+                if let Some(checksum) = &outcome.checksum {
+                    asset.set_checksum(Some(checksum.clone()));
+                }
             }
             asset.status = ModelStatus::Installed;
             snapshot = Some(asset.clone());
@@ -267,7 +272,6 @@ fn progress_fraction(downloaded: u64, expected: Option<u64>) -> f32 {
 
 pub fn sync_runtime_environment(manager: &ModelManager) -> Result<()> {
     sync_vad_env(manager)?;
-    sync_polish_env(manager)?;
     Ok(())
 }
 
@@ -282,20 +286,6 @@ fn sync_vad_env(manager: &ModelManager) -> Result<()> {
         }
     }
     std::env::remove_var("SILERO_VAD_MODEL");
-    Ok(())
-}
-
-fn sync_polish_env(manager: &ModelManager) -> Result<()> {
-    if let Some(asset) = manager.primary_asset(&ModelKind::PolishLlm) {
-        if matches!(asset.status, ModelStatus::Installed) {
-            let llm_dir = asset.path(manager.root());
-            if let Some(model) = find_first_with_extension(&llm_dir, "gguf") {
-                std::env::set_var("LLAMA_POLISH_MODEL", model);
-                return Ok(());
-            }
-        }
-    }
-    std::env::remove_var("LLAMA_POLISH_MODEL");
     Ok(())
 }
 

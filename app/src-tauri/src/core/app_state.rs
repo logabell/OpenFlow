@@ -1,5 +1,4 @@
 use std::sync::{Arc, Mutex as StdMutex};
-use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use parking_lot::Mutex;
@@ -186,40 +185,6 @@ impl AppState {
         self.complete_session(app);
     }
 
-    pub fn simulate_performance(&self, latency_ms: u64, cpu_percent: f32) -> Result<()> {
-        let latency = Duration::from_millis(latency_ms);
-        let cpu_fraction = (cpu_percent / 100.0).clamp(0.0, 1.0);
-
-        let guard = self.pipeline.lock();
-        let pipeline = guard
-            .as_ref()
-            .ok_or_else(|| anyhow!("pipeline not initialized"))?;
-        pipeline.simulate_performance(latency, cpu_fraction);
-        Ok(())
-    }
-
-    pub fn simulate_transcription(
-        &self,
-        app: &AppHandle,
-        raw_text: &str,
-        latency_ms: u64,
-        cpu_percent: f32,
-    ) -> Result<()> {
-        let latency = Duration::from_millis(latency_ms);
-        let cpu_fraction = (cpu_percent / 100.0).clamp(0.0, 1.0);
-
-        let guard = self.pipeline.lock();
-        let pipeline = guard
-            .as_ref()
-            .ok_or_else(|| anyhow!("pipeline not initialized"))?;
-
-        self.start_session(app);
-        self.mark_processing(app);
-        pipeline.process_transcription(raw_text, latency, cpu_fraction);
-        self.complete_session(app);
-
-        Ok(())
-    }
 
     pub fn set_output_mode(&self, mode: OutputMode) -> Result<()> {
         let guard = self.pipeline.lock();
@@ -305,7 +270,7 @@ impl AppState {
     }
 
     fn auto_download_default_models(&self, app: &AppHandle) {
-        let (parakeet_missing, vad_missing) = {
+        let (parakeet_asset, parakeet_missing, vad_asset, vad_missing) = {
             let guard = match self.models.lock() {
                 Ok(g) => g,
                 Err(e) => {
@@ -314,35 +279,43 @@ impl AppState {
                 }
             };
 
-            let parakeet_missing = guard
-                .primary_asset(&ModelKind::Parakeet)
+            let parakeet_asset = guard.primary_asset(&ModelKind::Parakeet).map(|a| a.name.clone());
+            let parakeet_missing = parakeet_asset
+                .as_ref()
+                .and_then(|name| guard.asset_by_name(name))
                 .map(|a| !matches!(a.status, ModelStatus::Installed))
                 .unwrap_or(true);
 
-            let vad_missing = guard
-                .primary_asset(&ModelKind::Vad)
+            let vad_asset = guard.primary_asset(&ModelKind::Vad).map(|a| a.name.clone());
+            let vad_missing = vad_asset
+                .as_ref()
+                .and_then(|name| guard.asset_by_name(name))
                 .map(|a| !matches!(a.status, ModelStatus::Installed))
                 .unwrap_or(true);
 
-            (parakeet_missing, vad_missing)
+            (parakeet_asset, parakeet_missing, vad_asset, vad_missing)
         };
 
         if parakeet_missing {
             tracing::info!("Parakeet ASR not installed, auto-downloading...");
-            if let Err(e) = self.queue_model_download(app, ModelKind::Parakeet) {
-                tracing::warn!("Failed to queue Parakeet download: {e:?}");
+            if let Some(name) = parakeet_asset {
+                if let Err(e) = self.queue_model_download(app, &name) {
+                    tracing::warn!("Failed to queue Parakeet download: {e:?}");
+                }
             }
         }
 
         if vad_missing {
             tracing::info!("Silero VAD not installed, auto-downloading...");
-            if let Err(e) = self.queue_model_download(app, ModelKind::Vad) {
-                tracing::warn!("Failed to queue VAD download: {e:?}");
+            if let Some(name) = vad_asset {
+                if let Err(e) = self.queue_model_download(app, &name) {
+                    tracing::warn!("Failed to queue VAD download: {e:?}");
+                }
             }
         }
     }
 
-    pub fn queue_model_download(&self, app: &AppHandle, kind: ModelKind) -> Result<()> {
+    pub fn queue_model_download(&self, app: &AppHandle, asset_name: &str) -> Result<()> {
         self.ensure_download_service(app)?;
         let service = self
             .downloads
@@ -350,7 +323,9 @@ impl AppState {
             .as_ref()
             .cloned()
             .ok_or_else(|| anyhow!("download service unavailable"))?;
-        service.queue(ModelDownloadJob { kind })
+        service.queue(ModelDownloadJob {
+            asset_name: asset_name.to_string(),
+        })
     }
 
     pub fn reload_pipeline(&self, app: &AppHandle) -> Result<()> {
@@ -374,26 +349,15 @@ impl AppState {
 
     fn sync_model_environment(&self) {
         if let Ok(manager) = self.models.lock() {
-            let polish_ready = manager
-                .primary_asset(&ModelKind::PolishLlm)
-                .map(|asset| matches!(asset.status, ModelStatus::Installed))
-                .unwrap_or(false);
-
             if let Err(error) = sync_runtime_environment(&*manager) {
                 tracing::warn!("Failed to sync model runtime environment: {error:?}");
-            }
-
-            drop(manager);
-
-            if let Err(error) = self.settings.set_polish_ready(polish_ready) {
-                tracing::warn!("Failed to update polish readiness: {error:?}");
             }
         }
     }
 
     fn build_asr_config(&self, settings: &crate::core::settings::FrontendSettings) -> AsrConfig {
-        let backend = parse_asr_backend(&settings.asr_backend);
-        let model_dir = self.resolve_asr_model_dir(&backend);
+        let backend = parse_asr_backend(settings);
+        let model_dir = self.resolve_asr_model_dir(settings, &backend);
 
         let provider = std::env::var("SHERPA_PROVIDER").unwrap_or_else(|_| "cpu".into());
         let num_threads = std::env::var("SHERPA_THREADS")
@@ -401,27 +365,60 @@ impl AppState {
             .and_then(|value| value.parse::<i32>().ok())
             .filter(|value| *value > 0);
 
+        let ct2_device = std::env::var("CT2_DEVICE").unwrap_or_else(|_| "cpu".into());
+        let ct2_compute_type = match settings.whisper_precision.as_str() {
+            "float" => "float16".to_string(),
+            _ => "int8".to_string(),
+        };
+
+        let (language, auto_language_detect) = if settings.asr_family == "whisper"
+            && settings.whisper_model_language == "en"
+        {
+            ("en".to_string(), false)
+        } else {
+            (settings.language.clone(), settings.auto_detect_language)
+        };
+
         AsrConfig {
             backend,
-            language: settings.language.clone(),
-            auto_language_detect: settings.auto_detect_language,
+            language,
+            auto_language_detect,
             model_dir,
             provider,
             num_threads,
+            ct2_device,
+            ct2_compute_type,
         }
     }
 
-    fn resolve_asr_model_dir(&self, backend: &AsrBackend) -> Option<std::path::PathBuf> {
-        let kind = match *backend {
-            AsrBackend::Zipformer => ModelKind::ZipformerAsr,
-            AsrBackend::Whisper => ModelKind::Whisper,
-            AsrBackend::Parakeet => ModelKind::Parakeet,
+    fn resolve_asr_model_dir(
+        &self,
+        settings: &crate::core::settings::FrontendSettings,
+        backend: &AsrBackend,
+    ) -> Option<std::path::PathBuf> {
+        let (kind, asset_name) = match *backend {
+            AsrBackend::WhisperOnnx => (
+                ModelKind::WhisperOnnx,
+                resolve_whisper_asset_name(settings, backend),
+            ),
+            AsrBackend::WhisperCt2 => (
+                ModelKind::WhisperCt2,
+                resolve_whisper_asset_name(settings, backend),
+            ),
+            AsrBackend::Parakeet => (ModelKind::Parakeet, None),
         };
+
         self.models
             .lock()
             .ok()
             .and_then(|guard| {
-                guard.primary_asset(&kind).and_then(|asset| {
+                let asset = if let Some(name) = asset_name {
+                    guard.asset_by_name(&name)
+                } else {
+                    guard.primary_asset(&kind)
+                };
+
+                asset.and_then(|asset| {
                     if matches!(asset.status, ModelStatus::Installed) {
                         Some(asset.path(guard.root()))
                     } else {
@@ -431,10 +428,10 @@ impl AppState {
             })
     }
 
-    pub fn uninstall_model(&self, app: &AppHandle, kind: ModelKind) -> Result<()> {
+    pub fn uninstall_model(&self, app: &AppHandle, asset_name: &str) -> Result<()> {
         let snapshot = {
             let mut guard = self.models.lock().map_err(|err| anyhow!(err.to_string()))?;
-            let result = guard.uninstall(&kind)?;
+            let result = guard.uninstall_by_name(asset_name)?;
             result
         };
         self.sync_model_environment();
@@ -450,16 +447,56 @@ impl AppState {
 fn parse_autoclean_mode(value: &str) -> AutocleanMode {
     match value {
         "off" => AutocleanMode::Off,
-        "polish" => AutocleanMode::Polish,
         _ => AutocleanMode::Fast,
     }
 }
 
-fn parse_asr_backend(value: &str) -> AsrBackend {
-    match value {
-        "whisper" => AsrBackend::Whisper,
-        "parakeet" => AsrBackend::Parakeet,
-        _ => AsrBackend::Zipformer,
+fn parse_asr_backend(settings: &crate::core::settings::FrontendSettings) -> AsrBackend {
+    if settings.asr_family == "whisper" {
+        if settings.whisper_backend == "onnx" {
+            AsrBackend::WhisperOnnx
+        } else {
+            AsrBackend::WhisperCt2
+        }
+    } else {
+        AsrBackend::Parakeet
+    }
+}
+
+fn resolve_whisper_asset_name(
+    settings: &crate::core::settings::FrontendSettings,
+    backend: &AsrBackend,
+) -> Option<String> {
+    let size = match settings.whisper_model.as_str() {
+        "tiny" | "base" | "small" | "medium" | "large-v3" | "large-v3-turbo" => {
+            settings.whisper_model.as_str()
+        }
+        _ => "small",
+    };
+
+    let language = if matches!(size, "large-v3" | "large-v3-turbo") {
+        "multi"
+    } else {
+        match settings.whisper_model_language.as_str() {
+            "en" => "en",
+            _ => "multi",
+        }
+    };
+
+    match backend {
+        AsrBackend::WhisperCt2 => {
+            let suffix = if language == "en" { "-en" } else { "" };
+            Some(format!("whisper-ct2-{size}{suffix}"))
+        }
+        AsrBackend::WhisperOnnx => {
+            let precision = match settings.whisper_precision.as_str() {
+                "float" => "float",
+                _ => "int8",
+            };
+            let lang_suffix = if language == "en" { "-en" } else { "" };
+            Some(format!("whisper-onnx-{size}{lang_suffix}-{precision}"))
+        }
+        _ => None,
     }
 }
 

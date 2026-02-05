@@ -12,8 +12,12 @@ This repository is Linux-only; Windows and macOS are not supported.
 ## Development (Linux)
 
 1. Install the Rust toolchain (Rust 1.78+) and Tauri prerequisites.
-2. Install Node dependencies with `yarn install`.
-3. Run the combined dev environment with `yarn tauri dev`.
+2. Install SentencePiece + pkg-config (used by the Whisper CT2 backend):
+   - Debian/Ubuntu: `sudo apt install libsentencepiece-dev pkg-config`
+   - Fedora: `sudo dnf install sentencepiece-devel pkgconf-pkg-config`
+   - Arch: `sudo pacman -S sentencepiece pkgconf`
+3. Install Node dependencies with `yarn install`.
+4. Run the combined dev environment with `yarn tauri dev`.
 
 The backend currently exposes foundational settings management and IPC hooks; audio/ASR pipelines are stubbed pending native integration.
 

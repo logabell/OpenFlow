@@ -5,20 +5,22 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
+#[cfg(feature = "asr-ct2")]
+use crate::asr::ct2_whisper;
 #[cfg(feature = "asr-sherpa")]
 use crate::asr::sherpa;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum AsrBackend {
-    Zipformer,
-    Whisper,
+    WhisperOnnx,
+    WhisperCt2,
     Parakeet,
 }
 
 impl Default for AsrBackend {
     fn default() -> Self {
-        AsrBackend::Zipformer
+        AsrBackend::Parakeet
     }
 }
 
@@ -31,17 +33,21 @@ pub struct AsrConfig {
     pub model_dir: Option<PathBuf>,
     pub provider: String,
     pub num_threads: Option<i32>,
+    pub ct2_device: String,
+    pub ct2_compute_type: String,
 }
 
 impl Default for AsrConfig {
     fn default() -> Self {
         Self {
-            backend: AsrBackend::Zipformer,
+            backend: AsrBackend::Parakeet,
             language: "auto".into(),
             auto_language_detect: true,
             model_dir: None,
             provider: "cpu".into(),
             num_threads: None,
+            ct2_device: "cpu".into(),
+            ct2_compute_type: "int8".into(),
         }
     }
 }
@@ -56,11 +62,11 @@ pub struct AsrEngine {
     config: AsrConfig,
     buffer: Mutex<Vec<f32>>,
     #[cfg(feature = "asr-sherpa")]
-    zipformer: Mutex<Option<sherpa_rs::zipformer::ZipFormer>>,
-    #[cfg(feature = "asr-sherpa")]
     whisper: Mutex<Option<sherpa_rs::whisper::WhisperRecognizer>>,
     #[cfg(feature = "asr-sherpa")]
     parakeet: Mutex<Option<sherpa_rs::transducer::TransducerRecognizer>>,
+    #[cfg(feature = "asr-ct2")]
+    ct2_whisper: Mutex<Option<ct2rs::Whisper>>,
 }
 
 impl AsrEngine {
@@ -69,11 +75,11 @@ impl AsrEngine {
             config,
             buffer: Mutex::new(Vec::new()),
             #[cfg(feature = "asr-sherpa")]
-            zipformer: Mutex::new(None),
-            #[cfg(feature = "asr-sherpa")]
             whisper: Mutex::new(None),
             #[cfg(feature = "asr-sherpa")]
             parakeet: Mutex::new(None),
+            #[cfg(feature = "asr-ct2")]
+            ct2_whisper: Mutex::new(None),
         }
     }
 
@@ -107,11 +113,30 @@ impl AsrEngine {
         }
 
         let started = Instant::now();
-        #[cfg(feature = "asr-sherpa")]
-        let result = self.transcribe_with_sherpa(sample_rate, samples);
+        let result = match self.config.backend {
+            AsrBackend::WhisperCt2 => {
+                #[cfg(feature = "asr-ct2")]
+                {
+                    self.transcribe_with_ct2(sample_rate, samples)
+                }
 
-        #[cfg(not(feature = "asr-sherpa"))]
-        let result: anyhow::Result<String> = Ok("local asr disabled".into());
+                #[cfg(not(feature = "asr-ct2"))]
+                {
+                    Err(anyhow::anyhow!("CT2 ASR disabled"))
+                }
+            }
+            _ => {
+                #[cfg(feature = "asr-sherpa")]
+                {
+                    self.transcribe_with_sherpa(sample_rate, samples)
+                }
+
+                #[cfg(not(feature = "asr-sherpa"))]
+                {
+                    Err(anyhow::anyhow!("local ASR disabled"))
+                }
+            }
+        };
 
         match result {
             Ok(text) => Ok(Some(RecognitionResult {
@@ -138,23 +163,7 @@ impl AsrEngine {
             .ok_or_else(|| anyhow::anyhow!("ASR model not installed"))?;
 
         match self.config.backend {
-            AsrBackend::Zipformer => {
-                let mut guard = self.zipformer.lock();
-                if guard.is_none() {
-                    info!("Loading Zipformer ASR model from {}", model_dir.display());
-                    *guard = Some(sherpa::load_zipformer(
-                        model_dir,
-                        &self.config.provider,
-                        self.config.num_threads,
-                    )?);
-                    info!("Zipformer ASR model loaded");
-                }
-                let recognizer = guard
-                    .as_mut()
-                    .ok_or_else(|| anyhow::anyhow!("zipformer recognizer unavailable"))?;
-                Ok(recognizer.decode(sample_rate, samples.to_vec()))
-            }
-            AsrBackend::Whisper => {
+            AsrBackend::WhisperOnnx => {
                 let mut guard = self.whisper.lock();
                 if guard.is_none() {
                     let language = if self.config.auto_language_detect {
@@ -193,7 +202,46 @@ impl AsrEngine {
                     .ok_or_else(|| anyhow::anyhow!("parakeet recognizer unavailable"))?;
                 Ok(recognizer.transcribe(sample_rate, samples))
             }
+            AsrBackend::WhisperCt2 => anyhow::bail!("CT2 ASR is not handled by sherpa"),
         }
+    }
+
+    #[cfg(feature = "asr-ct2")]
+    fn transcribe_with_ct2(&self, sample_rate: u32, samples: &[f32]) -> anyhow::Result<String> {
+        if sample_rate != 16_000 {
+            anyhow::bail!("ASR requires 16kHz audio (got {sample_rate}Hz)");
+        }
+
+        let model_dir = self
+            .config
+            .model_dir
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("ASR model not installed"))?;
+
+        let mut guard = self.ct2_whisper.lock();
+        if guard.is_none() {
+            info!("Loading CT2 Whisper model from {}", model_dir.display());
+            *guard = Some(ct2_whisper::load_whisper(
+                model_dir,
+                &self.config.ct2_device,
+                &self.config.ct2_compute_type,
+                self.config.num_threads,
+            )?);
+            info!("CT2 Whisper model loaded");
+        }
+
+        let recognizer = guard
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("CT2 whisper recognizer unavailable"))?;
+
+        let language = if self.config.auto_language_detect {
+            None
+        } else {
+            Some(self.config.language.as_str())
+        };
+
+        let result = ct2_whisper::transcribe(recognizer, samples, language)?;
+        Ok(result)
     }
 
     fn truncate_if_needed(buffer: &mut Vec<f32>) -> usize {

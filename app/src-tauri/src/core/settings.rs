@@ -20,15 +20,21 @@ pub struct FrontendSettings {
     pub toggle_to_talk_hotkey: String,
     pub hud_theme: String,
     pub show_overlay_on_wayland: bool,
-    pub asr_backend: String,
+    pub asr_family: String,
+    pub whisper_backend: String,
+    pub whisper_model: String,
+    pub whisper_model_language: String,
+    pub whisper_precision: String,
     pub paste_shortcut: String,
     pub language: String,
     pub auto_detect_language: bool,
     pub autoclean_mode: String,
-    pub polish_model_ready: bool,
     pub debug_transcripts: bool,
     pub audio_device_id: Option<String>,
     pub vad_sensitivity: String,
+    #[serde(default, skip_serializing)]
+    #[serde(rename = "asrBackend")]
+    pub legacy_asr_backend: Option<String>,
 }
 
 /// Default hotkey for push-to-talk mode (Alt+Shift+A avoids IME conflicts on Linux)
@@ -44,15 +50,19 @@ impl Default for FrontendSettings {
             toggle_to_talk_hotkey: DEFAULT_TOGGLE_TO_TALK_HOTKEY.into(),
             hud_theme: "system".into(),
             show_overlay_on_wayland: false,
-            asr_backend: "parakeet".into(),
+            asr_family: "parakeet".into(),
+            whisper_backend: "ct2".into(),
+            whisper_model: "small".into(),
+            whisper_model_language: "multi".into(),
+            whisper_precision: "int8".into(),
             paste_shortcut: "ctrl-shift-v".into(),
             language: "auto".into(),
             auto_detect_language: true,
             autoclean_mode: "fast".into(),
-            polish_model_ready: false,
             debug_transcripts: false,
             audio_device_id: None,
             vad_sensitivity: "medium".into(),
+            legacy_asr_backend: None,
         }
     }
 }
@@ -91,11 +101,14 @@ impl SettingsManager {
     pub fn read_frontend(&self) -> Result<FrontendSettings> {
         let mut guard = self.inner.write();
         maybe_expire_debug_transcripts(&mut guard);
+        migrate_frontend_settings(&mut guard.frontend);
         Ok(guard.frontend.clone())
     }
 
     pub fn write_frontend(&self, settings: FrontendSettings) -> Result<()> {
         let mut guard = self.inner.write();
+        let mut settings = settings;
+        migrate_frontend_settings(&mut settings);
 
         if settings.debug_transcripts {
             guard.debug_transcripts_until = Some(OffsetDateTime::now_utc() + DEBUG_TRANSCRIPT_TTL);
@@ -108,15 +121,6 @@ impl SettingsManager {
 
         persist_settings(self.path.as_path(), &guard)?;
         Ok(())
-    }
-
-    pub fn set_polish_ready(&self, ready: bool) -> Result<()> {
-        let mut guard = self.inner.write();
-        if guard.frontend.polish_model_ready == ready {
-            return Ok(());
-        }
-        guard.frontend.polish_model_ready = ready;
-        persist_settings(self.path.as_path(), &guard)
     }
 
     /// Returns the current active hotkey based on the hotkey mode setting.
@@ -168,5 +172,49 @@ fn maybe_expire_debug_transcripts(settings: &mut PersistedSettings) {
         }
     } else {
         settings.frontend.debug_transcripts = false;
+    }
+}
+
+fn migrate_frontend_settings(settings: &mut FrontendSettings) {
+    if let Some(legacy) = settings.legacy_asr_backend.take() {
+        match legacy.as_str() {
+            "whisper" => {
+                settings.asr_family = "whisper".into();
+                settings.whisper_backend = "onnx".into();
+            }
+            "parakeet" => {
+                settings.asr_family = "parakeet".into();
+            }
+            _ => {
+                settings.asr_family = "parakeet".into();
+            }
+        }
+    }
+
+    if settings.asr_family.is_empty() {
+        settings.asr_family = "parakeet".into();
+    }
+    if settings.whisper_backend.is_empty() {
+        settings.whisper_backend = "ct2".into();
+    }
+    if settings.whisper_model.is_empty() {
+        settings.whisper_model = "small".into();
+    }
+    if settings.whisper_model_language.is_empty() {
+        settings.whisper_model_language = "multi".into();
+    }
+    if settings.whisper_precision.is_empty() {
+        settings.whisper_precision = "int8".into();
+    }
+
+    if settings.autoclean_mode == "polish" {
+        settings.autoclean_mode = "fast".into();
+    }
+
+    if matches!(
+        settings.whisper_model.as_str(),
+        "large-v3" | "large-v3-turbo"
+    ) {
+        settings.whisper_model_language = "multi".into();
     }
 }

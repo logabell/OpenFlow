@@ -12,22 +12,31 @@ const Dashboard = () => {
   } = useAppStore();
   const [showDebug, setShowDebug] = useState(false);
 
-  const activeAsrKind =
-    settings?.asrBackend === "whisper"
-      ? "whisper"
-      : settings?.asrBackend === "parakeet"
-        ? "parakeet"
-        : "zipformer-asr";
-  const asrModel = models.find((m) => m.kind === activeAsrKind);
+  const asrFamily = settings?.asrFamily ?? "parakeet";
+  const whisperBackend = settings?.whisperBackend ?? "ct2";
+  const whisperModel = settings?.whisperModel ?? "small";
+  const whisperLanguage = settings?.whisperModelLanguage ?? "multi";
+  const whisperPrecision = settings?.whisperPrecision ?? "int8";
+  const whisperLanguageNormalized =
+    whisperModel === "large-v3" || whisperModel === "large-v3-turbo"
+      ? "multi"
+      : whisperLanguage;
+  const whisperAssetName =
+    whisperBackend === "ct2"
+      ? `whisper-ct2-${whisperModel}${whisperLanguageNormalized === "en" ? "-en" : ""}`
+      : `whisper-onnx-${whisperModel}${
+          whisperLanguageNormalized === "en" ? "-en" : ""
+        }-${whisperPrecision}`;
+  const asrModel =
+    asrFamily === "whisper"
+      ? models.find((m) => m.name === whisperAssetName)
+      : models.find((m) => m.kind === "parakeet");
   const vadModel = models.find((m) => m.kind === "vad");
-  const polishModel = models.find((m) => m.kind === "polish-llm");
 
   const asrLabel =
-    activeAsrKind === "whisper"
-      ? "Whisper"
-      : activeAsrKind === "parakeet"
-        ? "Parakeet"
-        : "Zipformer";
+    asrFamily === "whisper"
+      ? `Whisper ${whisperModel} (${whisperBackend.toUpperCase()})`
+      : "Parakeet";
 
   const modelsReady =
     asrModel?.status.state === "installed" && vadModel?.status.state === "installed";
@@ -106,15 +115,6 @@ const Dashboard = () => {
             title="Audio Processing"
             status="ready"
             description="WebRTC APM active"
-          />
-          <StatusCard
-            title="Text Polish"
-            status={polishModel?.status.state === "installed" ? "ready" : "optional"}
-            description={
-              polishModel?.status.state === "installed"
-                ? "LLM polish ready"
-                : "Optional - install in Settings"
-            }
           />
         </div>
 

@@ -7,7 +7,6 @@ import type {
   DownloadLogEntry,
   ModelRecord,
   ModelStateKind,
-  PerformanceMetrics,
 } from "../state/appStore";
 import {
   DEFAULT_PUSH_TO_TALK_HOTKEY,
@@ -47,6 +46,72 @@ const RECOMMENDED_SINGLE_KEYS = [
   "F24",
 ] as const;
 
+type WhisperSize = "tiny" | "base" | "small" | "medium" | "large-v3" | "large-v3-turbo";
+type WhisperBackend = "ct2" | "onnx";
+type WhisperLanguage = "en" | "multi";
+type WhisperPrecision = "int8" | "float";
+
+const WHISPER_SIZES: Array<{
+  id: WhisperSize;
+  label: string;
+  description: string;
+  hasEnglish: boolean;
+}> = [
+  {
+    id: "tiny",
+    label: "Tiny",
+    description: "Fastest, lowest accuracy.",
+    hasEnglish: true,
+  },
+  {
+    id: "base",
+    label: "Base",
+    description: "Fast, solid accuracy on clean audio.",
+    hasEnglish: true,
+  },
+  {
+    id: "small",
+    label: "Small",
+    description: "Balanced speed and accuracy.",
+    hasEnglish: true,
+  },
+  {
+    id: "medium",
+    label: "Medium",
+    description: "Higher accuracy, slower on laptops.",
+    hasEnglish: true,
+  },
+  {
+    id: "large-v3",
+    label: "Large v3",
+    description: "Best accuracy, highest latency.",
+    hasEnglish: false,
+  },
+  {
+    id: "large-v3-turbo",
+    label: "Large v3 Turbo",
+    description: "Faster large model with slight quality drop.",
+    hasEnglish: false,
+  },
+];
+
+function resolveWhisperAssetName(
+  backend: WhisperBackend,
+  size: WhisperSize,
+  language: WhisperLanguage,
+  precision: WhisperPrecision,
+) {
+  const modelLanguage =
+    size === "large-v3" || size === "large-v3-turbo" ? "multi" : language;
+  if (backend === "ct2") {
+    const langSuffix = modelLanguage === "en" ? "-en" : "";
+    return `whisper-ct2-${size}${langSuffix}`;
+  }
+
+  const langSuffix = modelLanguage === "en" ? "-en" : "";
+  return `whisper-onnx-${size}${langSuffix}-${precision}`;
+}
+
 function recommendedKeyOrCustom(value: string): string {
   return RECOMMENDED_SINGLE_KEYS.includes(value as (typeof RECOMMENDED_SINGLE_KEYS)[number])
     ? value
@@ -58,27 +123,9 @@ const SettingsPanel = () => {
     settings,
     updateSettings,
     toggleSettings,
-    startDictation,
-    markDictationProcessing,
-    completeDictation,
-    simulatePerformance,
-    simulateTranscription,
-    lastTranscript,
-    metrics,
-    hudState,
-    toggleLogViewer,
-    setLogs,
     models,
-    installZipformerModel,
-    installWhisperModel,
-    installParakeetModel,
-    installVadModel,
-    installPolishModel,
-    uninstallZipformerModel,
-    uninstallWhisperModel,
-    uninstallParakeetModel,
-    uninstallVadModel,
-    uninstallPolishModel,
+    installModelAsset,
+    uninstallModelAsset,
     audioDevices,
     refreshAudioDevices,
     downloadLogs,
@@ -86,16 +133,6 @@ const SettingsPanel = () => {
   } = useAppStore();
 
   const [draft, setDraft] = useState<AppSettings | null>(null);
-  const [performanceTest, setPerformanceTest] = useState({
-    latencyMs: 2500,
-    cpuPercent: 85,
-  });
-  const [transcriptionTest, setTranscriptionTest] = useState({
-    text: "Testing push to talk",
-    latencyMs: 1800,
-    cpuPercent: 60,
-  });
-
   const [linuxPermissions, setLinuxPermissions] =
     useState<LinuxPermissionsStatus | null>(null);
   const [linuxSetupBusy, setLinuxSetupBusy] = useState(false);
@@ -126,14 +163,6 @@ const SettingsPanel = () => {
     }
   }, [settings]);
 
-  const zipformerModel = useMemo(
-    () => models.find((model) => model.kind === "zipformer-asr"),
-    [models],
-  );
-  const whisperModel = useMemo(
-    () => models.find((model) => model.kind === "whisper"),
-    [models],
-  );
   const parakeetModel = useMemo(
     () => models.find((model) => model.kind === "parakeet"),
     [models],
@@ -142,11 +171,6 @@ const SettingsPanel = () => {
     () => models.find((model) => model.kind === "vad"),
     [models],
   );
-  const polishModel = useMemo(
-    () => models.find((model) => model.kind === "polish-llm"),
-    [models],
-  );
-
   if (!draft) {
     return null;
   }
@@ -218,61 +242,17 @@ const SettingsPanel = () => {
           />
           <AutocleanSection draft={draft} onChange={handleChange} />
           <ModelSection
-            zipformerModel={zipformerModel}
-            whisperModel={whisperModel}
+            models={models}
             parakeetModel={parakeetModel}
             vadModel={vadModel}
-            polishModel={polishModel}
             downloadLogs={downloadLogs}
-            onInstallZipformer={() => {
-              void installZipformerModel();
+            onInstallAsset={(name) => {
+              void installModelAsset(name);
             }}
-            onInstallWhisper={() => {
-              void installWhisperModel();
-            }}
-            onInstallParakeet={() => {
-              void installParakeetModel();
-            }}
-            onInstallVad={() => {
-              void installVadModel();
-            }}
-            onInstallPolish={() => {
-              void installPolishModel();
-            }}
-            onUninstallZipformer={() => {
-              void uninstallZipformerModel();
-            }}
-            onUninstallWhisper={() => {
-              void uninstallWhisperModel();
-            }}
-            onUninstallParakeet={() => {
-              void uninstallParakeetModel();
-            }}
-            onUninstallVad={() => {
-              void uninstallVadModel();
-            }}
-            onUninstallPolish={() => {
-              void uninstallPolishModel();
+            onUninstallAsset={(name) => {
+              void uninstallModelAsset(name);
             }}
             onClearLogs={clearDownloadLogs}
-          />
-          <DiagnosticsSection
-            draft={draft}
-            onToggle={(value) => handleChange("debugTranscripts", value)}
-            performanceTest={performanceTest}
-            setPerformanceTest={setPerformanceTest}
-            transcriptionTest={transcriptionTest}
-            setTranscriptionTest={setTranscriptionTest}
-            simulatePerformance={simulatePerformance}
-            simulateTranscription={simulateTranscription}
-            startDictation={startDictation}
-            markDictationProcessing={markDictationProcessing}
-            completeDictation={completeDictation}
-            hudState={hudState}
-            metrics={metrics}
-            lastTranscript={lastTranscript}
-            toggleLogViewer={toggleLogViewer}
-            setLogs={setLogs}
           />
         </div>
 
@@ -691,19 +671,95 @@ const SpeechSection = ({
     <h3 className="text-lg font-medium text-white">Speech</h3>
     <div className="mt-3 grid gap-3">
       <label className="flex items-center justify-between gap-3">
-        <span>ASR Backend</span>
+        <span>Model Family</span>
         <select
           className="rounded-md bg-slate-900 px-3 py-2"
-          value={draft.asrBackend}
+          value={draft.asrFamily}
           onChange={(event) =>
-            onChange("asrBackend", event.target.value as AppSettings["asrBackend"])
+            onChange("asrFamily", event.target.value as AppSettings["asrFamily"])
           }
         >
-          <option value="zipformer">Zipformer (fast)</option>
-          <option value="whisper">Whisper (accurate)</option>
-          <option value="parakeet">Parakeet (large)</option>
+          <option value="parakeet">Parakeet (fast default)</option>
+          <option value="whisper">Whisper (accuracy-first)</option>
         </select>
       </label>
+
+      {draft.asrFamily === "whisper" && (
+        <label className="flex items-center justify-between gap-3">
+          <span>Whisper Backend</span>
+          <select
+            className="rounded-md bg-slate-900 px-3 py-2"
+            value={draft.whisperBackend}
+            onChange={(event) =>
+              onChange("whisperBackend", event.target.value as AppSettings["whisperBackend"])
+            }
+          >
+            <option value="ct2">Fast CPU (CT2)</option>
+            <option value="onnx">Accelerated (ONNX)</option>
+          </select>
+        </label>
+      )}
+
+      {draft.asrFamily === "whisper" && (
+        <label className="flex items-center justify-between gap-3">
+          <span>Whisper Model</span>
+          <select
+            className="rounded-md bg-slate-900 px-3 py-2"
+            value={draft.whisperModel}
+            onChange={(event) =>
+              onChange("whisperModel", event.target.value as AppSettings["whisperModel"])
+            }
+          >
+            {WHISPER_SIZES.map((size) => (
+              <option key={size.id} value={size.id}>
+                {size.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+
+      {draft.asrFamily === "whisper" && (
+        <label className="flex items-center justify-between gap-3">
+          <span>Whisper Language</span>
+          <select
+            className="rounded-md bg-slate-900 px-3 py-2"
+            value={
+              draft.whisperModel === "large-v3" || draft.whisperModel === "large-v3-turbo"
+                ? "multi"
+                : draft.whisperModelLanguage
+            }
+            onChange={(event) =>
+              onChange(
+                "whisperModelLanguage",
+                event.target.value as AppSettings["whisperModelLanguage"],
+              )
+            }
+            disabled={
+              draft.whisperModel === "large-v3" || draft.whisperModel === "large-v3-turbo"
+            }
+          >
+            <option value="multi">Multilingual</option>
+            <option value="en">English Only</option>
+          </select>
+        </label>
+      )}
+
+      {draft.asrFamily === "whisper" && (
+        <label className="flex items-center justify-between gap-3">
+          <span>Whisper Precision</span>
+          <select
+            className="rounded-md bg-slate-900 px-3 py-2"
+            value={draft.whisperPrecision}
+            onChange={(event) =>
+              onChange("whisperPrecision", event.target.value as AppSettings["whisperPrecision"])
+            }
+          >
+            <option value="int8">INT8 (fast)</option>
+            <option value="float">Float (higher accuracy)</option>
+          </select>
+        </label>
+      )}
       <label className="flex items-center justify-between gap-3">
         <span>Language</span>
         <select
@@ -723,6 +779,9 @@ const SpeechSection = ({
           type="checkbox"
           checked={draft.autoDetectLanguage}
           onChange={(event) => onChange("autoDetectLanguage", event.target.checked)}
+          disabled={
+            draft.asrFamily === "whisper" && draft.whisperModelLanguage === "en"
+          }
         />
         Enable automatic language detection (when supported)
       </label>
@@ -837,109 +896,202 @@ const AutocleanSection = ({
         >
           <option value="off">Off</option>
           <option value="fast">Fast (Tier-1)</option>
-          <option value="polish" disabled={!draft.polishModelReady}>
-            Polish (Tier-2)
-          </option>
         </select>
       </label>
-      {!draft.polishModelReady && (
-        <p className="text-xs text-slate-400">
-          Download a local polish model to enable Tier-2 refinement.
-        </p>
-      )}
     </div>
   </section>
 );
 
 const ModelSection = ({
-  zipformerModel,
-  whisperModel,
+  models,
   parakeetModel,
   vadModel,
-  polishModel,
   downloadLogs,
-  onInstallZipformer,
-  onInstallWhisper,
-  onInstallParakeet,
-  onInstallVad,
-  onInstallPolish,
-  onUninstallZipformer,
-  onUninstallWhisper,
-  onUninstallParakeet,
-  onUninstallVad,
-  onUninstallPolish,
+  onInstallAsset,
+  onUninstallAsset,
   onClearLogs,
 }: {
-  zipformerModel: ModelRecord | undefined;
-  whisperModel: ModelRecord | undefined;
+  models: ModelRecord[];
   parakeetModel: ModelRecord | undefined;
   vadModel: ModelRecord | undefined;
-  polishModel: ModelRecord | undefined;
   downloadLogs: DownloadLogEntry[];
-  onInstallZipformer: () => void;
-  onInstallWhisper: () => void;
-  onInstallParakeet: () => void;
-  onInstallVad: () => void;
-  onInstallPolish: () => void;
-  onUninstallZipformer: () => void;
-  onUninstallWhisper: () => void;
-  onUninstallParakeet: () => void;
-  onUninstallVad: () => void;
-  onUninstallPolish: () => void;
+  onInstallAsset: (name: string) => void;
+  onUninstallAsset: (name: string) => void;
   onClearLogs: () => void;
 }) => {
-  const isAnyDownloading = [
-    zipformerModel,
-    whisperModel,
-    parakeetModel,
-    vadModel,
-    polishModel,
-  ].some((m) => m?.status.state === "downloading");
+  const isAnyDownloading = models.some((model) => model.status.state === "downloading");
+  const [openDownloadKey, setOpenDownloadKey] = useState<string | null>(null);
+  const [downloadSelections, setDownloadSelections] = useState<
+    Record<string, { language: WhisperLanguage; precision: WhisperPrecision }>
+  >({});
+
+  const getSelection = useCallback(
+    (key: string, hasEnglish: boolean) => {
+      const current = downloadSelections[key] ?? {
+        language: "multi" as WhisperLanguage,
+        precision: "int8" as WhisperPrecision,
+      };
+      if (!hasEnglish) {
+        return { ...current, language: "multi" as WhisperLanguage };
+      }
+      return current;
+    },
+    [downloadSelections],
+  );
+
+  const updateSelection = useCallback(
+    (
+      key: string,
+      update: Partial<{ language: WhisperLanguage; precision: WhisperPrecision }>,
+    ) => {
+      setDownloadSelections((prev) => ({
+        ...prev,
+        [key]: {
+          language: "multi",
+          precision: "int8",
+          ...prev[key],
+          ...update,
+        },
+      }));
+    },
+    [],
+  );
+
+  const renderWhisperRow = (backend: WhisperBackend, size: (typeof WHISPER_SIZES)[number]) => {
+    const key = `${backend}-${size.id}`;
+    const selection = getSelection(key, size.hasEnglish);
+    const assetName = resolveWhisperAssetName(
+      backend,
+      size.id,
+      selection.language,
+      selection.precision,
+    );
+    const record = models.find((model) => model.name === assetName);
+    const backendLabel = backend === "ct2" ? "Fast CPU (CT2)" : "Accelerated (ONNX)";
+    const description = `${size.description} ${backendLabel}.`;
+
+    return (
+      <div key={key} className="space-y-2">
+        {renderModelRow({
+          title: `Whisper ${size.label}`,
+          description,
+          record,
+          onInstall: () => setOpenDownloadKey(openDownloadKey === key ? null : key),
+          onUninstall: () => onUninstallAsset(assetName),
+        })}
+
+        {openDownloadKey === key && (
+          <div className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-xs text-slate-200">
+            <div className="grid gap-3 md:grid-cols-3">
+              <div>
+                <div className="mb-1 text-xs uppercase text-slate-400">Language</div>
+                {size.hasEnglish ? (
+                  <select
+                    className="w-full rounded-md bg-slate-950 px-2 py-1"
+                    value={selection.language}
+                    onChange={(event) =>
+                      updateSelection(key, {
+                        language: event.target.value as WhisperLanguage,
+                      })
+                    }
+                  >
+                    <option value="multi">Multilingual</option>
+                    <option value="en">English Only</option>
+                  </select>
+                ) : (
+                  <div className="rounded-md bg-slate-950 px-2 py-1 text-slate-400">
+                    Multilingual only
+                  </div>
+                )}
+              </div>
+              <div>
+                <div className="mb-1 text-xs uppercase text-slate-400">Precision</div>
+                <select
+                  className="w-full rounded-md bg-slate-950 px-2 py-1"
+                  value={selection.precision}
+                  onChange={(event) =>
+                    updateSelection(key, {
+                      precision: event.target.value as WhisperPrecision,
+                    })
+                  }
+                >
+                  <option value="int8">INT8 (fast)</option>
+                  <option value="float">Float (higher accuracy)</option>
+                </select>
+              </div>
+              <div className="flex flex-col justify-end gap-2">
+                <button
+                  type="button"
+                  className="rounded-md bg-cyan-600 px-3 py-2 text-xs font-semibold text-white hover:bg-cyan-500"
+                  onClick={() => {
+                    onInstallAsset(assetName);
+                    setOpenDownloadKey(null);
+                  }}
+                >
+                  Download Selected
+                </button>
+                <button
+                  type="button"
+                  className="rounded-md bg-white/10 px-3 py-2 text-xs text-slate-200 hover:bg-white/20"
+                  onClick={() => setOpenDownloadKey(null)}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+            {backend === "ct2" && (
+              <p className="mt-2 text-xs text-slate-400">
+                CT2 precision affects runtime speed only and does not change the download size.
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   return (
     <section>
       <h3 className="text-lg font-medium text-white">Models & Downloads</h3>
-      <div className="mt-3 space-y-3">
-        {renderModelRow({
-          title: "Zipformer ASR",
-          description: "Fast, lightweight speech recognition model.",
-          record: zipformerModel,
-          onInstall: onInstallZipformer,
-          onUninstall: onUninstallZipformer,
-        })}
-        {renderModelRow({
-          title: "Whisper ASR",
-          description: "Accurate speech recognition for varied accents.",
-          record: whisperModel,
-          onInstall: onInstallWhisper,
-          onUninstall: onUninstallWhisper,
-        })}
+      <div className="mt-3 space-y-4">
+        <div className="rounded-lg border border-white/10 bg-white/5 p-3">
+          <div className="flex items-center justify-between">
+            <h4 className="text-sm font-semibold text-white">Whisper (Fast CPU / CT2)</h4>
+            <span className="text-xs text-slate-400">Best on laptops</span>
+          </div>
+          <div className="mt-3 space-y-3">
+            {WHISPER_SIZES.map((size) => renderWhisperRow("ct2", size))}
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-white/10 bg-white/5 p-3">
+          <div className="flex items-center justify-between">
+            <h4 className="text-sm font-semibold text-white">Whisper (Accelerated / ONNX)</h4>
+            <span className="text-xs text-slate-400">Best with GPU/accelerators</span>
+          </div>
+          <div className="mt-3 space-y-3">
+            {WHISPER_SIZES.map((size) => renderWhisperRow("onnx", size))}
+          </div>
+        </div>
+
         {renderModelRow({
           title: "Parakeet ASR",
           description: "Large-capacity model for challenging audio.",
           record: parakeetModel,
-          onInstall: onInstallParakeet,
-          onUninstall: onUninstallParakeet,
+          onInstall: () => parakeetModel && onInstallAsset(parakeetModel.name),
+          onUninstall: () => parakeetModel && onUninstallAsset(parakeetModel.name),
           isDefault: true,
         })}
         {renderModelRow({
           title: "Voice Activity Detection (Silero)",
           description: "Improves speech gating and noise handling.",
           record: vadModel,
-          onInstall: onInstallVad,
-          onUninstall: onUninstallVad,
+          onInstall: () => vadModel && onInstallAsset(vadModel.name),
+          onUninstall: () => vadModel && onUninstallAsset(vadModel.name),
           isDefault: true,
-        })}
-        {renderModelRow({
-          title: "Polish LLM (Tier-2)",
-          description: "Enables optional llama.cpp cleanup for the Polish autoclean mode.",
-          record: polishModel,
-          onInstall: onInstallPolish,
-          onUninstall: onUninstallPolish,
         })}
       </div>
 
-      {/* Download Activity Log */}
       {(downloadLogs.length > 0 || isAnyDownloading) && (
         <div className="mt-4 rounded-lg border border-white/10 bg-slate-900/50 p-4">
           <div className="flex items-center justify-between">
@@ -985,308 +1137,6 @@ const ModelSection = ({
     </section>
   );
 };
-
-const DiagnosticsSection = ({
-  draft,
-  onToggle,
-  performanceTest,
-  setPerformanceTest,
-  transcriptionTest,
-  setTranscriptionTest,
-  simulatePerformance,
-  simulateTranscription,
-  startDictation,
-  markDictationProcessing,
-  completeDictation,
-  hudState,
-  metrics,
-  lastTranscript,
-  toggleLogViewer,
-  setLogs,
-}: {
-  draft: AppSettings;
-  onToggle: (value: boolean) => void;
-  performanceTest: { latencyMs: number; cpuPercent: number };
-  setPerformanceTest: React.Dispatch<
-    React.SetStateAction<{ latencyMs: number; cpuPercent: number }>
-  >;
-  transcriptionTest: { text: string; latencyMs: number; cpuPercent: number };
-  setTranscriptionTest: React.Dispatch<
-    React.SetStateAction<{ text: string; latencyMs: number; cpuPercent: number }>
-  >;
-  simulatePerformance: (latencyMs: number, cpuPercent: number) => Promise<void>;
-  simulateTranscription: (
-    text: string,
-    latencyMs?: number,
-    cpuPercent?: number,
-  ) => Promise<void>;
-  startDictation: () => Promise<void>;
-  markDictationProcessing: () => Promise<void>;
-  completeDictation: () => Promise<void>;
-  hudState: string;
-  metrics: PerformanceMetrics | null;
-  lastTranscript: string;
-  toggleLogViewer: (value?: boolean) => void;
-  setLogs: (logs: string[]) => void;
-}) => (
-  <section>
-    <h3 className="text-lg font-medium text-white">Diagnostics</h3>
-    <label className="mt-3 flex items-center gap-2 text-sm">
-      <input
-        type="checkbox"
-        checked={draft.debugTranscripts}
-        onChange={(event) => onToggle(event.target.checked)}
-      />
-      Enable debug transcripts (auto-disables after 24h)
-    </label>
-    <DiagnosticsControls
-      performanceTest={performanceTest}
-      setPerformanceTest={setPerformanceTest}
-      transcriptionTest={transcriptionTest}
-      setTranscriptionTest={setTranscriptionTest}
-      simulatePerformance={simulatePerformance}
-      simulateTranscription={simulateTranscription}
-      startDictation={startDictation}
-      markDictationProcessing={markDictationProcessing}
-      completeDictation={completeDictation}
-      hudState={hudState}
-      metrics={metrics}
-      lastTranscript={lastTranscript}
-      toggleLogViewer={toggleLogViewer}
-      setLogs={setLogs}
-    />
-  </section>
-);
-
-const DiagnosticsControls = ({
-  performanceTest,
-  setPerformanceTest,
-  transcriptionTest,
-  setTranscriptionTest,
-  simulatePerformance,
-  simulateTranscription,
-  startDictation,
-  markDictationProcessing,
-  completeDictation,
-  hudState,
-  metrics,
-  lastTranscript,
-  toggleLogViewer,
-  setLogs,
-}: {
-  performanceTest: { latencyMs: number; cpuPercent: number };
-  setPerformanceTest: React.Dispatch<
-    React.SetStateAction<{ latencyMs: number; cpuPercent: number }>
-  >;
-  transcriptionTest: { text: string; latencyMs: number; cpuPercent: number };
-  setTranscriptionTest: React.Dispatch<
-    React.SetStateAction<{ text: string; latencyMs: number; cpuPercent: number }>
-  >;
-  simulatePerformance: (latencyMs: number, cpuPercent: number) => Promise<void>;
-  simulateTranscription: (
-    text: string,
-    latencyMs?: number,
-    cpuPercent?: number,
-  ) => Promise<void>;
-  startDictation: () => Promise<void>;
-  markDictationProcessing: () => Promise<void>;
-  completeDictation: () => Promise<void>;
-  hudState: string;
-  metrics: PerformanceMetrics | null;
-  lastTranscript: string;
-  toggleLogViewer: (value?: boolean) => void;
-  setLogs: (logs: string[]) => void;
-}) => (
-  <div className="mt-4 flex flex-col gap-3 text-sm">
-    <div className="flex flex-wrap gap-2 text-sm">
-      <button
-        type="button"
-        className="rounded-md bg-white/10 px-3 py-2 text-white hover:bg-white/20"
-        onClick={() => {
-          void startDictation().catch(console.error);
-        }}
-      >
-        Simulate Listening
-      </button>
-      <button
-        type="button"
-        className="rounded-md bg-white/10 px-3 py-2 text-white hover:bg-white/20"
-        onClick={() => {
-          void markDictationProcessing().catch(console.error);
-        }}
-      >
-        Simulate Processing
-      </button>
-      <button
-        type="button"
-        className="rounded-md bg-white/10 px-3 py-2 text-white hover:bg-white/20"
-        onClick={() => {
-          void completeDictation().catch(console.error);
-        }}
-      >
-        Reset HUD
-      </button>
-      <div className="flex items-center gap-3 rounded-md bg-white/5 px-3 py-2">
-        <label className="flex flex-col text-xs text-slate-300">
-          Latency (ms)
-          <input
-            type="number"
-            min={0}
-            className="mt-1 w-24 rounded bg-slate-900 px-2 py-1 text-white"
-            value={performanceTest.latencyMs}
-            onChange={(event) =>
-              setPerformanceTest((prev) => ({
-                ...prev,
-                latencyMs: Number(event.target.value),
-              }))
-            }
-          />
-        </label>
-        <label className="flex flex-col text-xs text-slate-300">
-          CPU %
-          <input
-            type="number"
-            min={0}
-            max={100}
-            className="mt-1 w-20 rounded bg-slate-900 px-2 py-1 text-white"
-            value={performanceTest.cpuPercent}
-            onChange={(event) =>
-              setPerformanceTest((prev) => ({
-                ...prev,
-                cpuPercent: Number(event.target.value),
-              }))
-            }
-          />
-        </label>
-        <button
-          type="button"
-          className="rounded bg-cyan-500 px-3 py-2 text-slate-900 hover:bg-cyan-400"
-          onClick={() => {
-            void simulatePerformance(
-              performanceTest.latencyMs,
-              performanceTest.cpuPercent,
-            ).catch(console.error);
-          }}
-        >
-          Perf Alert
-        </button>
-      </div>
-      <div className="grid w-full gap-3 rounded-md bg-white/5 p-3 text-xs text-slate-200">
-        <div className="flex flex-wrap items-center gap-3">
-          <span className="font-semibold text-slate-200">Live Metrics</span>
-          <span className="rounded-full bg-slate-900 px-2 py-1 text-[0.7rem] uppercase tracking-wide text-slate-300">
-            {metrics?.performanceMode ? "Performance Mode" : "Normal"}
-          </span>
-          {import.meta.env.DEV && (
-            <button
-              type="button"
-              className="rounded bg-white/10 px-2 py-1 text-[0.65rem] uppercase text-white hover:bg-white/20"
-              onClick={() => {
-                void (async () => {
-                  try {
-                    const snapshot = await invoke<string[]>("get_logs");
-                    if (Array.isArray(snapshot)) {
-                      setLogs(snapshot);
-                    }
-                  } catch (error) {
-                    console.error("Failed to fetch logs", error);
-                  }
-                  toggleLogViewer(true);
-                })();
-              }}
-            >
-              View Logs
-            </button>
-          )}
-        </div>
-        <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-          <MetricTile label="Latency" value={`${metrics?.lastLatencyMs ?? "—"} ms`} />
-          <MetricTile
-            label="CPU"
-            value={
-              typeof metrics?.averageCpuPercent === "number"
-                ? `${metrics.averageCpuPercent.toFixed(1)} %`
-                : "—"
-            }
-          />
-          <MetricTile
-            label="Slow Count"
-            value={metrics ? String(metrics.consecutiveSlow) : "—"}
-          />
-          <MetricTile label="HUD State" value={hudState.replace("-", " ")} />
-        </div>
-      </div>
-      <div className="flex w-full flex-col gap-2 rounded-md bg-white/5 p-3 text-xs text-slate-200">
-        <div className="flex w-full flex-wrap items-center gap-3">
-          <label className="flex flex-1 flex-col gap-1">
-            Sample Text
-            <input
-              type="text"
-              className="rounded bg-slate-900 px-3 py-2 text-white"
-              value={transcriptionTest.text}
-              onChange={(event) =>
-                setTranscriptionTest((prev) => ({
-                  ...prev,
-                  text: event.target.value,
-                }))
-              }
-            />
-          </label>
-          <label className="flex flex-col">
-            Latency (ms)
-            <input
-              type="number"
-              min={0}
-              className="mt-1 w-24 rounded bg-slate-900 px-2 py-1 text-white"
-              value={transcriptionTest.latencyMs}
-              onChange={(event) =>
-                setTranscriptionTest((prev) => ({
-                  ...prev,
-                  latencyMs: Number(event.target.value),
-                }))
-              }
-            />
-          </label>
-          <label className="flex flex-col">
-            CPU %
-            <input
-              type="number"
-              min={0}
-              max={100}
-              className="mt-1 w-20 rounded bg-slate-900 px-2 py-1 text-white"
-              value={transcriptionTest.cpuPercent}
-              onChange={(event) =>
-                setTranscriptionTest((prev) => ({
-                  ...prev,
-                  cpuPercent: Number(event.target.value),
-                }))
-              }
-            />
-          </label>
-          <button
-            type="button"
-            className="rounded bg-emerald-400 px-3 py-2 text-slate-900 hover:bg-emerald-300"
-            onClick={() => {
-              void simulateTranscription(
-                transcriptionTest.text,
-                transcriptionTest.latencyMs,
-                transcriptionTest.cpuPercent,
-              ).catch(console.error);
-            }}
-          >
-            Run Transcription
-          </button>
-        </div>
-        <div className="flex flex-col gap-1 text-slate-300">
-          <span className="font-semibold text-slate-200">Last Output</span>
-          <div className="rounded bg-slate-900 p-3 text-slate-100">
-            {lastTranscript || "—"}
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-);
 
 function renderModelRow({
   title,
@@ -1511,13 +1361,6 @@ function renderModelRow({
     </div>
   );
 }
-
-const MetricTile = ({ label, value }: { label: string; value: string }) => (
-  <div className="rounded bg-white/5 p-3">
-    <p className="text-xs uppercase tracking-wide text-slate-400">{label}</p>
-    <p className="mt-1 text-lg font-semibold text-white">{value}</p>
-  </div>
-);
 
 function formatBytes(bytes: number): string {
   if (!bytes) {

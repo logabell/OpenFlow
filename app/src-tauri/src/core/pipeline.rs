@@ -167,15 +167,6 @@ impl SpeechPipeline {
         self.inner.audio.device_id()
     }
 
-    pub fn simulate_performance(&self, latency: Duration, cpu_fraction: f32) {
-        self.inner.simulate_performance(latency, cpu_fraction)
-    }
-
-    pub fn process_transcription(&self, raw_text: &str, latency: Duration, cpu_fraction: f32) {
-        self.inner
-            .process_transcription(raw_text, latency, cpu_fraction)
-    }
-
     pub fn set_mode(&self, mode: AutocleanMode) {
         self.inner.set_mode(mode)
     }
@@ -396,22 +387,6 @@ impl SpeechPipelineInner {
         events::emit_metrics(&self.app, &*metrics);
     }
 
-    fn simulate_performance(&self, latency: Duration, cpu_fraction: f32) {
-        {
-            let mut metrics = self.metrics.lock();
-            metrics.average_cpu = cpu_fraction;
-            events::emit_metrics(&self.app, &*metrics);
-        }
-        self.update_metrics(latency);
-    }
-
-    fn process_transcription(&self, raw_text: &str, latency: Duration, cpu_fraction: f32) {
-        self.simulate_performance(latency, cpu_fraction);
-        let active_mode = *self.mode.lock();
-        self.autoclean.set_mode(active_mode);
-        let cleaned = self.autoclean.clean(raw_text);
-        self.deliver_output(&cleaned);
-    }
 
     fn set_mode(&self, mode: AutocleanMode) {
         let mut guard = self.mode.lock();

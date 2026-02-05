@@ -44,9 +44,13 @@ const DebugPanel = ({ onClose }: { onClose: () => void }) => {
     startDictation,
     markDictationProcessing,
     completeDictation,
+    updateSettings,
     models,
     audioDevices,
     settings,
+    metrics,
+    toggleLogViewer,
+    setLogs: setLogSnapshot,
   } = useAppStore();
 
   const [logs, setLogs] = useState<DebugLog[]>([]);
@@ -73,6 +77,20 @@ const DebugPanel = ({ onClose }: { onClose: () => void }) => {
       { id: Date.now(), timestamp: new Date(), type, message },
     ]);
   }, []);
+
+  const handleToggleDebugTranscripts = useCallback(
+    async (enabled: boolean) => {
+      if (!settings) {
+        return;
+      }
+      try {
+        await updateSettings({ ...settings, debugTranscripts: enabled });
+      } catch (error) {
+        addLog("error", `Failed to update debug transcripts: ${error}`);
+      }
+    },
+    [addLog, settings, updateSettings],
+  );
 
   const stopHoldToTalk = useCallback(
     async (reason: string, opts?: { silent?: boolean }) => {
@@ -421,10 +439,39 @@ const DebugPanel = ({ onClose }: { onClose: () => void }) => {
     }
   };
 
-  const zipformerModel = models.find((m) => m.kind === "zipformer-asr");
-  const whisperModel = models.find((m) => m.kind === "whisper");
+  const asrFamily = settings?.asrFamily ?? "parakeet";
+  const whisperBackend = settings?.whisperBackend ?? "ct2";
+  const whisperModel = settings?.whisperModel ?? "small";
+  const whisperLanguage = settings?.whisperModelLanguage ?? "multi";
+  const whisperPrecision = settings?.whisperPrecision ?? "int8";
+  const whisperLanguageNormalized =
+    whisperModel === "large-v3" || whisperModel === "large-v3-turbo"
+      ? "multi"
+      : whisperLanguage;
+  const whisperAssetName =
+    whisperBackend === "ct2"
+      ? `whisper-ct2-${whisperModel}${whisperLanguageNormalized === "en" ? "-en" : ""}`
+      : `whisper-onnx-${whisperModel}${
+          whisperLanguageNormalized === "en" ? "-en" : ""
+        }-${whisperPrecision}`;
+
+  const activeAsrModel =
+    asrFamily === "whisper"
+      ? models.find((m) => m.name === whisperAssetName)
+      : models.find((m) => m.kind === "parakeet");
+  const whisperCt2Model =
+    models.find((m) => m.kind === "whisper-ct2" && m.status.state === "installed") ??
+    models.find((m) => m.kind === "whisper-ct2");
+  const whisperOnnxModel =
+    models.find((m) => m.kind === "whisper-onnx" && m.status.state === "installed") ??
+    models.find((m) => m.kind === "whisper-onnx");
   const parakeetModel = models.find((m) => m.kind === "parakeet");
   const vadModel = models.find((m) => m.kind === "vad");
+
+  const asrLabel =
+    asrFamily === "whisper"
+      ? `Whisper ${whisperModel} (${whisperBackend.toUpperCase()})`
+      : "Parakeet";
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4">
@@ -484,7 +531,9 @@ const DebugPanel = ({ onClose }: { onClose: () => void }) => {
                 <div className="flex justify-between">
                   <span className="text-slate-400">ASR Backend:</span>
                   <span className="font-mono text-sm text-slate-300">
-                    {settings?.asrBackend ?? "unknown"}
+                    {asrFamily === "whisper"
+                      ? `whisper (${whisperBackend})`
+                      : "parakeet"}
                   </span>
                 </div>
                 <div className="flex justify-between">
@@ -551,6 +600,72 @@ const DebugPanel = ({ onClose }: { onClose: () => void }) => {
               </div>
             </section>
 
+            {/* Diagnostics */}
+            <section className="mb-6">
+              <h3 className="mb-3 text-sm font-semibold uppercase tracking-wider text-slate-400">
+                Diagnostics
+              </h3>
+              <div className="space-y-3 rounded-lg bg-slate-800/50 p-3">
+                <label className="flex items-center gap-2 text-xs text-slate-200">
+                  <input
+                    type="checkbox"
+                    checked={settings?.debugTranscripts ?? false}
+                    onChange={(event) => {
+                      void handleToggleDebugTranscripts(event.target.checked);
+                    }}
+                    disabled={!settings}
+                  />
+                  Enable debug transcripts (auto-disables after 24h)
+                </label>
+                <div className="flex flex-wrap items-center gap-2 text-xs">
+                  <span className="font-semibold text-slate-300">Live Metrics</span>
+                  <span className="rounded-full bg-slate-900 px-2 py-1 text-[0.65rem] uppercase tracking-wide text-slate-300">
+                    {metrics?.performanceMode ? "Performance Mode" : "Normal"}
+                  </span>
+                  {import.meta.env.DEV && (
+                    <button
+                      type="button"
+                      className="rounded bg-white/10 px-2 py-1 text-[0.65rem] uppercase text-white hover:bg-white/20"
+                      onClick={() => {
+                        void (async () => {
+                          try {
+                            const snapshot = await invoke<string[]>("get_logs");
+                            if (Array.isArray(snapshot)) {
+                              setLogSnapshot(snapshot);
+                            }
+                          } catch (error) {
+                            addLog("error", `Failed to fetch logs: ${error}`);
+                          }
+                          toggleLogViewer(true);
+                        })();
+                      }}
+                    >
+                      View Logs
+                    </button>
+                  )}
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <MetricTile
+                    label="Latency"
+                    value={`${metrics?.lastLatencyMs ?? "—"} ms`}
+                  />
+                  <MetricTile
+                    label="CPU"
+                    value={
+                      typeof metrics?.averageCpuPercent === "number"
+                        ? `${metrics.averageCpuPercent.toFixed(1)} %`
+                        : "—"
+                    }
+                  />
+                  <MetricTile
+                    label="Slow Count"
+                    value={metrics ? String(metrics.consecutiveSlow) : "—"}
+                  />
+                  <MetricTile label="HUD State" value={hudState.replace("-", " ")} />
+                </div>
+              </div>
+            </section>
+
             {/* Model Status */}
             <section className="mb-6">
               <h3 className="mb-3 text-sm font-semibold uppercase tracking-wider text-slate-400">
@@ -558,27 +673,39 @@ const DebugPanel = ({ onClose }: { onClose: () => void }) => {
               </h3>
               <div className="space-y-2 rounded-lg bg-slate-800/50 p-3">
                 <div className="flex items-center justify-between">
-                  <span className="text-slate-400">Zipformer ASR:</span>
+                  <span className="text-slate-400">Active ASR:</span>
                   <span
                     className={`rounded-full px-2 py-0.5 text-xs ${
-                      zipformerModel?.status.state === "installed"
+                      activeAsrModel?.status.state === "installed"
                         ? "bg-emerald-500/20 text-emerald-300"
                         : "bg-red-500/20 text-red-300"
                     }`}
                   >
-                    {zipformerModel?.status.state ?? "unknown"}
+                    {activeAsrModel?.status.state ? `${asrLabel}: ${activeAsrModel.status.state}` : "unknown"}
                   </span>
                 </div>
                 <div className="flex items-center justify-between">
-                  <span className="text-slate-400">Whisper ASR:</span>
+                  <span className="text-slate-400">Whisper CT2:</span>
                   <span
                     className={`rounded-full px-2 py-0.5 text-xs ${
-                      whisperModel?.status.state === "installed"
+                      whisperCt2Model?.status.state === "installed"
                         ? "bg-emerald-500/20 text-emerald-300"
                         : "bg-red-500/20 text-red-300"
                     }`}
                   >
-                    {whisperModel?.status.state ?? "unknown"}
+                    {whisperCt2Model?.status.state ?? "unknown"}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-400">Whisper ONNX:</span>
+                  <span
+                    className={`rounded-full px-2 py-0.5 text-xs ${
+                      whisperOnnxModel?.status.state === "installed"
+                        ? "bg-emerald-500/20 text-emerald-300"
+                        : "bg-red-500/20 text-red-300"
+                    }`}
+                  >
+                    {whisperOnnxModel?.status.state ?? "unknown"}
                   </span>
                 </div>
                 <div className="flex items-center justify-between">
@@ -782,5 +909,12 @@ const DebugPanel = ({ onClose }: { onClose: () => void }) => {
     </div>
   );
 };
+
+const MetricTile = ({ label, value }: { label: string; value: string }) => (
+  <div className="rounded bg-slate-900/60 p-2">
+    <p className="text-[0.65rem] uppercase tracking-wide text-slate-500">{label}</p>
+    <p className="mt-1 text-sm font-semibold text-slate-100">{value}</p>
+  </div>
+);
 
 export default DebugPanel;

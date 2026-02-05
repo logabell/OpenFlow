@@ -10,11 +10,11 @@
 - ✅ Project scaffold created (Tauri + React frontend, Rust backend structure, initial CI placeholders).  
 - ✅ Settings persistence implemented with 24 h debug transcript auto-expiry.  
 - ✅ Speech pipeline metrics stubbed (latency & CPU tracking, performance-warning event ready).  
-- ✅ Diagnostics commands (`simulate_performance`, `simulate_transcription`) wired end-to-end; frontend shows latest cleaned transcript.  
+- ✅ Diagnostics surfaces live metrics in the Debug & Testing panel.  
 - ✅ Log viewer scaffolded (tray + settings entry) with periodic backend broadcast.  
 - ✅ Real audio capture integrated via CPAL (device selector, 16 kHz mono stream, synthetic fallback disabled once device available); clipboard-preserving paste still stubbed for Windows.  
 - 🔄 Dependency installation pending (Rust toolchain, JS packages).  
-- 🔄 Native integrations (audio capture, ASR, VAD, LLM polish, output injector) to be implemented.  
+- 🔄 Native integrations (audio capture, ASR, VAD, output injector) to be implemented.  
 - 🔄 Tray menu, updater wiring, onboarding UI unimplemented.
 
 ## 3. Upcoming Tasks
@@ -22,29 +22,25 @@
 1. Install toolchains: Rust `rustup` + JS dependencies (`yarn install`).  
 2. Integrate WebRTC APM + optional `dtln-rs` into the capture chain (AEC/AGC/NS).  
 3. Finalize streaming sherpa ASR loop (backend buffering + env wiring landed; enable `asr-sherpa` feature and supply models to replace simulator fully).  
-4. Connect Tier-2 polish (llama.cpp) with on-demand model download + progress UI (runtime hook uses `LLAMA_POLISH_CMD`; downloader/UI still pending).  
-5. Implement output injection (clipboard-preserving paste, secure-field detection).  
-6. Add tray menu wiring and Settings trigger events from backend.  
-7. Configure updater to track GitHub Releases (stable/beta) with Ed25519 signature verification.  
-8. Flesh out onboarding flow for language + mic calibration and ensure auto-detect toggling per model.  
-9. Replace simulated diagnostics with automated smoke tests once live ASR hooked up.  
-10. Replace in-memory log buffer with persistent rolling file + expose export button.
+4. Implement output injection (clipboard-preserving paste, secure-field detection).  
+5. Add tray menu wiring and Settings trigger events from backend.  
+6. Configure updater to track GitHub Releases (stable/beta) with Ed25519 signature verification.  
+7. Flesh out onboarding flow for language + mic calibration and ensure auto-detect toggling per model.  
+8. Replace simulated diagnostics with automated smoke tests once live ASR hooked up.  
+9. Replace in-memory log buffer with persistent rolling file + expose export button.
 
 ## 4. Diagnostics Quickstart
 
-- Use `simulate_performance(latency_ms, cpu_percent)` (exposed via Settings → Diagnostics) to trigger HUD performance warnings/recovery.  
-- Use `simulate_transcription(text, latency_ms?, cpu_percent?)` to run Tier-1 cleanup, emit `transcription-output`, and cycle HUD states.  
-- Latest cleaned transcript appears under “Diagnostics → Last Output” for quick verification.
+- Live metrics and debug transcript toggles live in the Debug & Testing panel.  
 
 ## 4.1 Native Model Hooks
 
 - **Streaming sherpa**: backend now buffers real frames and will prefer sherpa when the `asr-sherpa` cargo feature is enabled and the `SHERPA_ONLINE_MODEL` (plus optional `SHERPA_ONLINE_TOKENS`) env vars point to a valid Zipformer directory. Without those assets the simulator still answers, so ship the models to flip the integration fully live.  
-- **Tier-2 polish**: set `LLAMA_POLISH_CMD` (and optional `LLAMA_POLISH_ARGS`, `LLAMA_POLISH_TIMEOUT_SECS`) to a script or `llama.cpp` runner that reads from STDIN and writes polished text to STDOUT. When unset we fall back to Tier-1 cleanup automatically. Downloader/UI wiring remains on the backlog.
 
 ## 5. Decisions & Clarifications Log
 
 - Performance degradation mode: emit HUD warning only; no automatic module disabling (Oct 2025 addendum).  
-- Tier-1 cleanup: deterministic rules engine default; Tier-2 (llama.cpp 1–2 B int4) optional download.  
+- Tier-1 cleanup: deterministic rules engine default.  
 - Auto updates: manual opt-in via Settings; `auto_update` flag allows silent mode for enterprise.  
 - Debug transcripts: Advanced setting toggle; auto-disabled after 24 h to protect privacy.  
 - Language: Default Auto Detect when supported; onboarding screen lets users lock language and mic.
@@ -71,7 +67,7 @@
 > - **Privacy:** audio never leaves the device.  
 > - **Simplicity:** one hotkey, one HUD, one clean result.  
 >   
-> All processing happens locally via optimized ONNX Runtime (for speech recognition and VAD), WebRTC APM (for echo/gain/noise control), and optionally llama.cpp (for local LLM text polish).  
+> All processing happens locally via optimized ONNX Runtime (for speech recognition and VAD) and WebRTC APM (for echo/gain/noise control).  
 > Cloud models can be used optionally via BYO API key for advanced cleanup, but remain strictly opt-in.  
 >   
 > ## 2. Core Objectives  
@@ -108,7 +104,7 @@
 > 4. **Finish**  
 >    - User releases hotkey or pauses (VAD silence window ≈ 400 ms).  
 >    - HUD switches to “processing” spinner.  
->    - Final recognition → Tier-1 text cleanup → optional LLM polish.  
+>    - Final recognition → Tier-1 text cleanup.  
 >    - Output instantly **pasted** into focused text field.  
 >    - Clipboard restored to its prior contents.  
 >    - HUD fades out.  
@@ -154,9 +150,7 @@
 > - Quantization: Auto (INT8/FP16) with ✅ or ⚠️ badge  
 >   
 > #### Autoclean  
-> - Mode: Off / Fast (Tier-1) / Polish (Tiny LLM) / Cloud (BYO key)  
-> - Local backend: llama.cpp (GGUF 1–3 B int4)  
-> - Cloud BYO API key (stored securely in Credential Manager)  
+> - Mode: Off / Fast (Tier-1)  
 >   
 > #### Output  
 > - Action: **Paste** (default) / Copy  
@@ -182,7 +176,7 @@
 > |--------|---------------------|------------------|  
 > | **Frontend (UI)** | React + TypeScript (Vite) | HUD, Settings, Logs, Tray menus |  
 > | **Backend (Core)** | Rust (Tauri backend) | Audio engine, ASR, VAD, LLM, output injection, model management |  
-> | **Native Libraries** | C / C++ (via Rust FFI or sidecar) | ONNX Runtime (DirectML/CPU), WebRTC APM, llama.cpp, CTranslate2/whisper.cpp |  
+> | **Native Libraries** | C / C++ (via Rust FFI or sidecar) | ONNX Runtime (DirectML/CPU), WebRTC APM, CTranslate2/whisper.cpp |  
 > | **Packaging** | Tauri bundler (NSIS/MSIX) | Installer, autostart, code signing |  
 >   
 > ### 5.2 Stack Details  
@@ -198,7 +192,6 @@
 > | **ASR Engine (Streaming)** | sherpa-onnx Zipformer Transducer (INT8/FP16) | Real-time speech to text |  
 > | **ASR Engine (Accuracy)** | whisper.cpp / CTranslate2 | High-accuracy batch mode |  
 > | **Autoclean Tier-1** | Custom Rust rules engine | Punctuation, casing, disfluency removal |  
-> | **Autoclean Tier-2** | `llama.cpp` (GGUF 1–3 B int4) | Tiny local LLM polish |  
 > | **Output Injection** | Windows `SendInput`, `UIAutomation`, `clipboard-win` | Paste without losing clipboard |  
 > | **UI Automation** | `windows` / `uiautomation-com` | Detect focused editable control |  
 > | **Hotkeys** | `tauri-plugin-global-shortcut` | Global PTT trigger |  
@@ -217,8 +210,6 @@
 > ↓  
 > Tier-1 Postproc  
 > ↓  
-> Optional Tier-2 LLM Polish  
-> ↓  
 > Output Injector (SendInput → UIA → Clipboard Restore)  
 > ↓  
 > HUD Status Update → Done  
@@ -231,7 +222,7 @@
 > | **Preproc Thread** | APM + dtln-rs denoise. |  
 > | **VAD Thread** | Speech gating (20–30 ms frames) with dynamic hangover and Silero offload. |
 > | **ASR Worker** | Streaming decode (Zipformer) or batch (Whisper). |  
-> | **Postproc Worker** | Tier-1 rules + optional Tier-2 LLM. |  
+> | **Postproc Worker** | Tier-1 rules cleanup. |  
 > | **Output Worker** | Text injection + clipboard restore. |  
 > | **UI Thread** | HUD animation / settings / logs. |  
 >   
@@ -258,7 +249,7 @@
 > ## 8. Model Management  
 >   
 > - **Storage:** `%APPDATA%\\PushToTalk\\models`  
-> - **Types:** Zipformer (INT8/FP16), Whisper variants, Llama GGUF 1–3 B  
+> - **Types:** Zipformer (INT8/FP16), Whisper variants  
 > - **Verification:** SHA-256 checksum.  
 > - **Download:** Lazy on first use; resumable.  
 > - **Updates:** Automatic or manual via Settings; tray badge.  
@@ -271,7 +262,6 @@
 > | AEC reference unavailable | Use NS + AGC; log once. |  
 > | `dtln-rs` over CPU budget | Disable temporarily; revert to Standard. |  
 > | ASR behind real-time | Drop Enhanced processing; trim VAD. |  
-> | LLM token diff > 20 % | Fallback to Tier-1 text. |  
 > | Injection failure | Retry via UIA or clipboard copy. |  
 > | Module crash | Worker restart; session log entry. |  
 >   
@@ -289,7 +279,6 @@
 > | Scenario | Target Tail Latency |  
 > |-----------|--------------------|  
 > | 10 s utterance, streaming + Tier-1 | 0.5–1.4 s |  
-> | + Tier-2 LLM | 0.8–1.8 s |  
 > | Low-end CPU (INT8) | < 2 s |  
 > | Whisper (batch) | ≤ 4 s acceptable |  
 >   
@@ -298,7 +287,7 @@
 > ### 12.1 Languages & Tools  
 > - **Rust (2021 edition)** — core logic, IPC backend, Windows APIs, FFI to C/C++ libs.  
 > - **TypeScript / React (Vite)** — UI frontend.  
-> - **C/C++ libs** — ONNX Runtime, WebRTC APM, llama.cpp, CTranslate2.  
+> - **C/C++ libs** — ONNX Runtime, WebRTC APM, CTranslate2.  
 > - **Build system:** Cargo + Yarn + Tauri Bundler.  
 > - **CI:** GitHub Actions / Azure Pipelines for reproducible APM and ORT builds.  
 >   
@@ -311,7 +300,7 @@
 > │ │ ├─ audio/ # WASAPI + APM + dtln
 > │ │ ├─ vad/ # Silero ONNX
 > │ │ ├─ asr/ # sherpa-onnx + whisper backend
-> │ │ ├─ llm/ # llama.cpp integration
+> │ │ ├─ llm/ # autoclean rules
 > │ │ ├─ output/ # UIA, SendInput, clipboard
 > │ │ ├─ models/ # manager, checksums, updater
 > │ │ ├─ core/ # orchestration, state, channels
@@ -342,9 +331,7 @@
 > - **DirectML Runtime:** Bundle ORT DirectML DLLs matching GPU drivers.  
 > - **Code Signing:** Sign MSI/MSIX to prevent AV false positives.  
 > - **Model Downloads:** Deferred to first run to keep installer < 100 MB.  
-> - **Windows LLVM Toolchain:** `llama_cpp_sys` depends on `libclang.dll`, so install LLVM/Clang and export `LIBCLANG_PATH` to its `bin` folder (e.g. `C:\Program Files\LLVM\bin`).  
 > - **GNU Build Utilities:** WebRTC APM depends on `libtoolize`/`pkg-config`—install MSYS2 and add `C:\msys64\ucrt64\bin;C:\msys64\usr\bin` to `PATH`, then `pacman -S --needed mingw-w64-ucrt-x86_64-{toolchain,libtool,pkg-config}` plus the MSYS `autoconf/automake`. Set `MSYS2_SHELL` (default `C:\msys64\usr\bin\bash.exe`) so the patched build script can fall back to the MSYS2 shell when those commands are only available as scripts.  
-> - **`llvm-nm` Availability:** Ensure `C:\Program Files\LLVM\bin` is on `PATH` (or set `NM_PATH` to `llvm-nm.exe`) so `llama_cpp_sys` can locate the symbol table tool.  
 >   
 > ---
 >   
@@ -352,89 +339,17 @@
 > _Final Addendum (October 2025)_  
 >   
 > ## Latency Fallback  
-> If tail latency exceeds two seconds, the system will automatically trigger **performance degradation mode**. In this mode the app disables optional `dtln-rs` enhanced denoising, limits LLM use to Tier-1 rule-based cleanup only, and temporarily reduces VAD hang-over time. This ensures transcription remains responsive at the expense of minor quality loss. The HUD will briefly display a ⚙ “Performance optimized” icon to indicate adaptive fallback has occurred, without interrupting the user’s workflow.  
+> If tail latency exceeds two seconds, the system will automatically trigger **performance degradation mode**. In this mode the app disables optional `dtln-rs` enhanced denoising and temporarily reduces VAD hang-over time. This ensures transcription remains responsive at the expense of minor quality loss. The HUD will briefly display a ⚙ “Performance optimized” icon to indicate adaptive fallback has occurred, without interrupting the user’s workflow.  
 >   
 > ## Tier-1 Cleanup Default / tier cleanup clarification  
 >   
-> **Raw ASR vs Tier-1 vs Tier-2 (what each does)**  
->   
 > **Raw ASR (speech → text)**  
 >   
-> Converts audio into words.  
-> Doesn’t change your wording; it just recognizes it.  
-> What you get depends on the model family:  
->   
-> Whisper: usually outputs punctuation/casing already (quality improves with larger models).  
-> Streaming models (Zipformer/Paraformer/CTC via sherpa-onnx): may emit mostly plain text or light punctuation; formatting isn’t their priority.  
-> Raw ASR will keep disfluencies (um, uh, repeated words, false starts) and any misrecognitions that occurred.  
+> Converts audio into words. Formatting varies by model family, and disfluencies or misrecognitions can remain.  
 >   
 > **Tier-1 cleanup (deterministic)**  
 >   
-> A tiny, fast, rule-based (or micro-model) pass over the ASR text.  
-> Tasks: add/fix punctuation & casing, remove fillers (“um/uh/like”), collapse dup words (“I—I”), normalize whitespace and stray symbols.  
-> Goals: be predictable, safe, and fast (tens of ms). No “creative” rewriting and no hallucinations.  
-> This makes output look polished even when the ASR didn’t format much.  
->   
-> **Tier-2 cleanup (tiny LLM “polish”)**  
->   
->	A small instruction-tuned model (e.g., 1–3B, int4 via llama.cpp) with a strict prompt:  
->	“Remove disfluencies and fix punctuation/casing. Do not paraphrase or add content.”  
->	Catches edge cases Tier-1 might miss (awkward fragments, tricky commas) while staying conservative.  
->	Latency: ~100–400 ms locally on typical laptops.  
->	Important: Tier-2 does not correct misheard words—it doesn’t re-listen to audio. Garbage in → garbage out.  
->   
-> **Where sherpa-onnx and streaming ASR fit**  
->   
->	sherpa-onnx is your on-device inference toolkit. It runs modern streaming ASR models (e.g., Zipformer-Transducer) on Windows/macOS/Linux using ONNX Runtime (DirectML/CUDA/CoreML/CPU).  
->	Streaming ASR means the model decodes as you speak, so when VAD says “you’re done,” it needs only a short finalize step—great for your “paste once after I stop” UX with sub-second to ~1.5s tail latency.  
->	You’ll suppress partials in the UI (no distraction), but still enjoy the speed benefit.  
->   
-> **Do you need Tier-1 if you have a small LLM?**  
->   
->	Yes—keep Tier-1.  
->	It’s ultra-fast, zero-risk, and guarantees consistent punctuation/casing and disfluency removal.  
->	It reduces the work (and risk) for Tier-2, and you can ship Tier-1 as the default even on low-end machines.  
->	If a user disables Tier-2, results still look professional.  
->	Think of Tier-1 as your safety net; Tier-2 is a nice-to-have.  
->   
-> **Is a small LLM enough—and should “cleanup” just be On/Off?**  
->   
->	Small LLM is enough for this task; you don’t need a reasoning monster.  
->	Use one default tiny model (1–2B int4 GGUF via llama.cpp).  
->	Expose “Autoclean: Off / Fast / Polish” to keep it simple:  
->	Off → Raw ASR (for purists / debugging).  
->	Fast → Tier-1 only (default).  
->	Polish → Tier-1 + tiny LLM (strict prompt, token cap).  
->	Optional “Advanced”: let power users swap in another GGUF and/or BYO-key cloud.  
->	This keeps UX minimal while still offering choice.  
->   
-> **How much punctuation/grammar do ASR models give you?**  
->   
->	Whisper: generally adds punctuation and casing already. With good audio and mid-to-large models, formatting is decent; with smaller models/noisy audio, it gets patchy.  
->	Streaming models (Zipformer/Paraformer/CTC): some checkpoints include punctuation, but don’t rely on it. Plan to add/fix punctuation in Tier-1 so output is consistent across engines.  
->	None will remove disfluencies reliably by themselves—plan that in cleanup.  
->   
-> **Recommended setup (practical)**  
->   
->	ASR:  
->	Default = Streaming Zipformer-Transducer (sherpa-onnx); hide partials; finalize fast.  
->	Optional mode = Whisper (non-streaming) for users who want that accuracy profile and accept more tail latency on weak hardware.  
->   
->	Noise handling (before ASR):  
->	APM (AEC + AGC + baseline NS) always on; optional dtln-rs for “AI Clean” in tough environments.  
->   
->	Cleanup:  
->	Tier-1 (Fast) always available; set as default.  
->	Tier-2 (Polish) = tiny llama.cpp model with a strict, non-paraphrasing prompt; optional and quick.  
->	Cloud BYO (text only) for enthusiasts; off by default.  
->   
-> **Why this is best:**  
->   
->	Streaming ASR gives you speed without showing interim text.  
->	Tier-1 guarantees clean, readable results across models.  
->	Tier-2 adds finesse when wanted, stays local and fast, and doesn’t complicate UX.  
->   
->	If you want, I can draft the exact Tier-1 ruleset (regex + heuristics), the Tier-2 prompt + token caps, and the minimal settings JSON that wires these modes together.  
+> A fast, rules-based pass over the ASR text to add/fix punctuation and casing, remove fillers, and normalize whitespace. It is designed to be safe and low-latency.  
 >   
 > ## Enhanced Denoise Throttling  
 > just a warning badge  
@@ -459,15 +374,6 @@
 >   
 > - **Trigger:** Enter degraded mode when **tail-latency > 2.0 s** for **≥2 consecutive utterances** _and_ CPU usage of the ASR thread averages **>75%** over those utterances.  
 > - no mitigation just warn user  
->   
-> ## Tier-2 “Polish” (tiny LLM) distribution & UX  
->   
-> - **Distribution:** **On-demand download** (default Polish model not bundled) to keep the installer lean. Cache to the user’s model folder with checksum.  
-> - **Model size target:** **1–2B int4 GGUF** (≈0.8–1.2 GB) to balance quality and footprint.  
-> - **UX while unavailable/downloading:**  
->   - If user toggles **Polish** and the model isn’t present: show a modal or dropdown with llama.cpp model selection  
->   - During download: non-blocking progress bar in Settings and a tray progress ring; **Polish remains off** until ready.  
->   - If offline: clear error banner, automatically queue for the next online session.  
 >   
 > ## First-run language behavior  
 > - **Default:** Assume **English** but **enable auto-language-detect** when the selected ASR supports it (Zipformer/Paraformer models often include it; Whisper can be instructed similarly).  

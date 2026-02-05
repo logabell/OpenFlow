@@ -4,30 +4,6 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use sherpa_rs::transducer::{TransducerConfig, TransducerRecognizer};
 use sherpa_rs::whisper::{WhisperConfig, WhisperRecognizer};
-use sherpa_rs::zipformer::{ZipFormer, ZipFormerConfig};
-
-pub fn load_zipformer(
-    model_dir: &Path,
-    provider: &str,
-    num_threads: Option<i32>,
-) -> Result<ZipFormer> {
-    let config = ZipFormerConfig {
-        encoder: find_component(model_dir, "encoder")?
-            .to_string_lossy()
-            .into_owned(),
-        decoder: find_component(model_dir, "decoder")?
-            .to_string_lossy()
-            .into_owned(),
-        joiner: find_component(model_dir, "joiner")?
-            .to_string_lossy()
-            .into_owned(),
-        tokens: find_tokens(model_dir)?.to_string_lossy().into_owned(),
-        provider: Some(provider.to_string()),
-        num_threads,
-        ..Default::default()
-    };
-    ZipFormer::new(config).map_err(|err| anyhow::anyhow!("init zipformer model: {err}"))
-}
 
 pub fn load_whisper(
     model_dir: &Path,

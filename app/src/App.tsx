@@ -37,7 +37,6 @@ const App = () => {
     setHudState,
     toggleSettings,
     setSettingsState,
-    setTranscript,
     setMetrics,
     logViewerVisible,
     toggleLogViewer,
@@ -95,16 +94,6 @@ const App = () => {
         toggleSettings(true);
       });
       unlisteners.push(() => settingsDispose());
-
-      const transcriptDispose = await listen<string>(
-        "transcription-output",
-        (event) => {
-          if (event.payload) {
-            setTranscript(event.payload);
-          }
-        },
-      );
-      unlisteners.push(() => transcriptDispose());
 
       const metricsDispose = await listen<Record<string, unknown>>(
         "performance-metrics",
@@ -262,7 +251,6 @@ const App = () => {
     setHudState,
     toggleSettings,
     setSettingsState,
-    setTranscript,
     setMetrics,
     toggleLogViewer,
     setLogs,

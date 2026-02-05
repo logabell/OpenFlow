@@ -44,13 +44,12 @@ The Rust backend uses feature flags for optional functionality:
 - `webrtc-apm` - WebRTC audio processing (default, requires MSYS2 on Windows)
 - `asr-sherpa` - Sherpa streaming ASR
 - `vad-silero` - Silero voice activity detection (ONNX)
-- `llama-polish` - LLM-based text polishing
 - `enhanced-denoise` - Deep filter noise reduction
 - `windows-accessibility` - UI Automation for secure field detection
 
 To bypass WebRTC on Windows before MSYS2 is configured:
 ```bash
-yarn tauri dev --no-default-features --features audio,hud,models,real-audio,asr-sherpa,llama-polish,vad-silero
+yarn tauri dev --no-default-features --features audio,hud,models,real-audio,asr-sherpa,vad-silero
 ```
 
 ## Architecture
@@ -69,7 +68,7 @@ yarn tauri dev --no-default-features --features audio,hud,models,real-audio,asr-
 | `audio/` | CPAL audio capture (16kHz mono), device enumeration, preprocessing (WebRTC APM) |
 | `vad/` | Voice activity detection (energy heuristic or Silero ONNX) |
 | `asr/` | Speech recognition (Sherpa Zipformer streaming or Whisper batch) |
-| `llm/` | Text cleanup - Tier-1 deterministic (autoclean) and Tier-2 LLM polish |
+| `llm/` | Text cleanup - Tier-1 deterministic (autoclean) |
 | `output/` | Clipboard-preserving paste, secure field blocking, tray icon |
 | `models/` | Model inventory, download manager, checksum validation |
 
@@ -81,7 +80,7 @@ yarn tauri dev --no-default-features --features audio,hud,models,real-audio,asr-
 
 ### Key Data Flow
 
-1. **Audio Capture** -> Preprocessing (WebRTC APM) -> **VAD Gate** -> **ASR Transcription** -> **Cleanup (Tier-1/Tier-2)** -> **Output Injection**
+1. **Audio Capture** -> Preprocessing (WebRTC APM) -> **VAD Gate** -> **ASR Transcription** -> **Cleanup (Tier-1)** -> **Output Injection**
 
 2. Performance monitoring: If latency >2s for 2 consecutive utterances and CPU >75%, backend emits `performance-warning` and temporarily reduces VAD hangover.
 

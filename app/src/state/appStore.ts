@@ -2,11 +2,11 @@ import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 
 export type ModelKind =
-  | "zipformer-asr"
-  | "whisper"
+  | "whisper-onnx"
+  | "whisper-ct2"
   | "parakeet"
-  | "polish-llm"
-  | "vad";
+  | "vad"
+  | "unknown";
 
 type RawModelStatus =
   | "notInstalled"
@@ -68,12 +68,21 @@ export interface AppSettings {
   toggleToTalkHotkey: string;
   hudTheme: "system" | "light" | "dark" | "high-contrast";
   showOverlayOnWayland: boolean;
-  asrBackend: "zipformer" | "whisper" | "parakeet";
+  asrFamily: "parakeet" | "whisper";
+  whisperBackend: "ct2" | "onnx";
+  whisperModel:
+    | "tiny"
+    | "base"
+    | "small"
+    | "medium"
+    | "large-v3"
+    | "large-v3-turbo";
+  whisperModelLanguage: "en" | "multi";
+  whisperPrecision: "int8" | "float";
   pasteShortcut: "ctrl-v" | "ctrl-shift-v";
   language: string;
   autoDetectLanguage: boolean;
-  autocleanMode: "off" | "fast" | "polish";
-  polishModelReady: boolean;
+  autocleanMode: "off" | "fast";
   debugTranscripts: boolean;
   audioDeviceId: string | null;
   vadSensitivity: "low" | "medium" | "high";
@@ -95,12 +104,15 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   toggleToTalkHotkey: DEFAULT_TOGGLE_TO_TALK_HOTKEY,
   hudTheme: "system",
   showOverlayOnWayland: false,
-  asrBackend: "parakeet",
+  asrFamily: "parakeet",
+  whisperBackend: "ct2",
+  whisperModel: "small",
+  whisperModelLanguage: "multi",
+  whisperPrecision: "int8",
   pasteShortcut: "ctrl-shift-v",
   language: "auto",
   autoDetectLanguage: true,
   autocleanMode: "fast",
-  polishModelReady: false,
   debugTranscripts: false,
   audioDeviceId: null,
   vadSensitivity: "medium",
@@ -118,35 +130,19 @@ interface AppState {
   updateSettings: (settings: AppSettings) => Promise<void>;
   refreshSettings: () => Promise<void>;
   setSettingsState: (settings: AppSettings) => void;
-  lastTranscript: string;
   metrics: PerformanceMetrics | null;
   logs: string[];
-  setTranscript: (text: string) => void;
   setMetrics: (metrics: PerformanceMetrics) => void;
   setLogs: (logs: string[]) => void;
   startDictation: (opts?: { showOverlay?: boolean }) => Promise<void>;
   markDictationProcessing: () => Promise<void>;
   completeDictation: () => Promise<void>;
   secureFieldBlocked: () => Promise<void>;
-  simulatePerformance: (latencyMs: number, cpuPercent: number) => Promise<void>;
-  simulateTranscription: (
-    text: string,
-    latencyMs?: number,
-    cpuPercent?: number,
-  ) => Promise<void>;
   models: ModelRecord[];
   refreshModels: () => Promise<void>;
   setModelSnapshot: (snapshot: ModelSnapshotPayload) => void;
-  installZipformerModel: () => Promise<void>;
-  installWhisperModel: () => Promise<void>;
-  installParakeetModel: () => Promise<void>;
-  installVadModel: () => Promise<void>;
-  installPolishModel: () => Promise<void>;
-  uninstallZipformerModel: () => Promise<void>;
-  uninstallWhisperModel: () => Promise<void>;
-  uninstallParakeetModel: () => Promise<void>;
-  uninstallVadModel: () => Promise<void>;
-  uninstallPolishModel: () => Promise<void>;
+  installModelAsset: (name: string) => Promise<void>;
+  uninstallModelAsset: (name: string) => Promise<void>;
   toasts: Toast[];
   notify: (toast: Omit<Toast, "id">) => void;
   dismissToast: (id: number) => void;
@@ -169,7 +165,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   settingsVisible: false,
   logViewerVisible: false,
   settings: null,
-  lastTranscript: "",
   metrics: null,
   logs: [],
   models: [],
@@ -204,7 +199,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   setSettingsState: (settings) =>
     set({ settings }),
-  setTranscript: (text) => set({ lastTranscript: text }),
   setMetrics: (metrics) => set({ metrics }),
   setLogs: (logs) => set({ logs }),
   startDictation: async (opts) => {
@@ -219,19 +213,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   secureFieldBlocked: async () => {
     await invoke("secure_field_blocked");
-  },
-  simulatePerformance: async (latencyMs, cpuPercent) => {
-    await invoke("simulate_performance", {
-      latencyMs,
-      cpuPercent,
-    });
-  },
-  simulateTranscription: async (text, latencyMs, cpuPercent) => {
-    await invoke("simulate_transcription", {
-      rawText: text,
-      latencyMs,
-      cpuPercent,
-    });
   },
   refreshModels: async () => {
     const raw = await invoke<RawModelAsset[]>("list_models");
@@ -340,163 +321,36 @@ export const useAppStore = create<AppState>((set, get) => ({
       return { models, toasts, downloadLogs, downloadStartTimes };
     });
   },
-  installZipformerModel: async () => {
+  installModelAsset: async (name: string) => {
     try {
-      await invoke("install_zipformer_asr");
+      await invoke("install_model_asset", { name });
       get().notify({
-        title: "Zipformer model download started",
+        title: "Model download started",
+        description: name,
         variant: "info",
       });
     } catch (error) {
-      console.error("Failed to start Zipformer model install", error);
+      console.error("Failed to start model install", error);
       get().notify({
-        title: "Zipformer install failed",
+        title: "Model install failed",
         description: String(error),
         variant: "error",
       });
     }
   },
-  installWhisperModel: async () => {
+  uninstallModelAsset: async (name: string) => {
     try {
-      await invoke("install_whisper_asr");
+      await invoke("uninstall_model_asset", { name });
       get().notify({
-        title: "Whisper model download started",
-        variant: "info",
-      });
-    } catch (error) {
-      console.error("Failed to start Whisper model install", error);
-      get().notify({
-        title: "Whisper install failed",
-        description: String(error),
-        variant: "error",
-      });
-    }
-  },
-  installParakeetModel: async () => {
-    try {
-      await invoke("install_parakeet_asr");
-      get().notify({
-        title: "Parakeet model download started",
-        variant: "info",
-      });
-    } catch (error) {
-      console.error("Failed to start Parakeet model install", error);
-      get().notify({
-        title: "Parakeet install failed",
-        description: String(error),
-        variant: "error",
-      });
-    }
-  },
-  installVadModel: async () => {
-    try {
-      await invoke("install_vad_model");
-      get().notify({
-        title: "VAD model download started",
-        variant: "info",
-      });
-    } catch (error) {
-      console.error("Failed to start VAD model install", error);
-      get().notify({
-        title: "VAD install failed",
-        description: String(error),
-        variant: "error",
-      });
-    }
-  },
-  installPolishModel: async () => {
-    try {
-      await invoke("install_polish_model");
-      get().notify({
-        title: "Polish model download started",
+        title: "Model removed",
+        description: name,
         variant: "info",
       });
       await get().refreshSettings();
     } catch (error) {
-      console.error("Failed to start polish model install", error);
+      console.error("Failed to uninstall model", error);
       get().notify({
-        title: "Polish install failed",
-        description: String(error),
-        variant: "error",
-      });
-    }
-  },
-  uninstallZipformerModel: async () => {
-    try {
-      await invoke("uninstall_zipformer_asr");
-      get().notify({
-        title: "Zipformer model removed",
-        variant: "info",
-      });
-    } catch (error) {
-      console.error("Failed to uninstall Zipformer model", error);
-      get().notify({
-        title: "Zipformer uninstall failed",
-        description: String(error),
-        variant: "error",
-      });
-    }
-  },
-  uninstallWhisperModel: async () => {
-    try {
-      await invoke("uninstall_whisper_asr");
-      get().notify({
-        title: "Whisper model removed",
-        variant: "info",
-      });
-    } catch (error) {
-      console.error("Failed to uninstall Whisper model", error);
-      get().notify({
-        title: "Whisper uninstall failed",
-        description: String(error),
-        variant: "error",
-      });
-    }
-  },
-  uninstallParakeetModel: async () => {
-    try {
-      await invoke("uninstall_parakeet_asr");
-      get().notify({
-        title: "Parakeet model removed",
-        variant: "info",
-      });
-    } catch (error) {
-      console.error("Failed to uninstall Parakeet model", error);
-      get().notify({
-        title: "Parakeet uninstall failed",
-        description: String(error),
-        variant: "error",
-      });
-    }
-  },
-  uninstallVadModel: async () => {
-    try {
-      await invoke("uninstall_vad_model");
-      get().notify({
-        title: "VAD model removed",
-        variant: "info",
-      });
-    } catch (error) {
-      console.error("Failed to uninstall VAD model", error);
-      get().notify({
-        title: "VAD uninstall failed",
-        description: String(error),
-        variant: "error",
-      });
-    }
-  },
-  uninstallPolishModel: async () => {
-    try {
-      await invoke("uninstall_polish_model");
-      get().notify({
-        title: "Polish model removed",
-        variant: "info",
-      });
-      await get().refreshSettings();
-    } catch (error) {
-      console.error("Failed to uninstall polish model", error);
-      get().notify({
-        title: "Polish uninstall failed",
+        title: "Model uninstall failed",
         description: String(error),
         variant: "error",
       });
@@ -532,11 +386,29 @@ export interface Toast {
 }
 
 function formatModelName(name: string): string {
-  if (name.includes("zipformer")) {
-    return "Zipformer ASR";
+  const whisperSizes = ["large-v3-turbo", "large-v3", "medium", "small", "base", "tiny"];
+
+  const formatWhisper = (backend: "CT2" | "ONNX", raw: string) => {
+    const size = whisperSizes.find((candidate) => raw.startsWith(candidate));
+    if (!size) {
+      return `Whisper ${backend}`;
+    }
+    let suffix = raw.slice(size.length);
+    if (suffix.startsWith("-")) {
+      suffix = suffix.slice(1);
+    }
+    const parts = suffix.split("-").filter(Boolean);
+    const lang = parts.includes("en") ? "en" : null;
+    const precision = parts.includes("float") ? "float" : parts.includes("int8") ? "int8" : null;
+    const details = [size, lang, precision].filter(Boolean).join(", ");
+    return details.length > 0 ? `Whisper ${backend} (${details})` : `Whisper ${backend}`;
+  };
+
+  if (name.startsWith("whisper-ct2-")) {
+    return formatWhisper("CT2", name.replace("whisper-ct2-", ""));
   }
-  if (name.includes("whisper")) {
-    return "Whisper ASR";
+  if (name.startsWith("whisper-onnx-")) {
+    return formatWhisper("ONNX", name.replace("whisper-onnx-", ""));
   }
   if (name.includes("parakeet")) {
     return "Parakeet ASR";
