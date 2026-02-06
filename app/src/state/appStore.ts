@@ -121,12 +121,10 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
 interface AppState {
   hudState: HudState;
   settingsVisible: boolean;
-  logViewerVisible: boolean;
   settings: AppSettings | null;
   initialize: () => Promise<void>;
   setHudState: (state: HudState) => void;
   toggleSettings: (value?: boolean) => void;
-  toggleLogViewer: (value?: boolean) => void;
   updateSettings: (settings: AppSettings) => Promise<void>;
   refreshSettings: () => Promise<void>;
   setSettingsState: (settings: AppSettings) => void;
@@ -163,7 +161,6 @@ export interface AudioDevice {
 export const useAppStore = create<AppState>((set, get) => ({
   hudState: "idle",
   settingsVisible: false,
-  logViewerVisible: false,
   settings: null,
   metrics: null,
   logs: [],
@@ -182,11 +179,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((prev) => ({
       settingsVisible:
         value !== undefined ? value : !prev.settingsVisible,
-    })),
-  toggleLogViewer: (value) =>
-    set((prev) => ({
-      logViewerVisible:
-        value !== undefined ? value : !prev.logViewerVisible,
     })),
   updateSettings: async (settings) => {
     await invoke("update_settings", { settings });

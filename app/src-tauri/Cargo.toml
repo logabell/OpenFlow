@@ -34,6 +34,7 @@ rodio = "0.17"
 cpal = "0.15"
 hound = "3.5"
 regex = "1.10"
+globset = "0.4"
 sha2 = "0.10"
 ort = { version = "2.0.0-rc.10", optional = true }
 sherpa-rs = { version = "0.6.8", optional = true, features = ["download-binaries"] }

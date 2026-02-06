@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef, type PointerEvent } from "rea
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useAppStore } from "../state/appStore";
+import { AccordionSection, Button, Card, Select, Tabs } from "../ui/primitives";
 
 interface DebugLog {
   id: number;
@@ -49,8 +50,8 @@ const DebugPanel = ({ onClose }: { onClose: () => void }) => {
     audioDevices,
     settings,
     metrics,
-    toggleLogViewer,
-    setLogs: setLogSnapshot,
+    logs: backendLogs,
+    setLogs: setBackendLogs,
   } = useAppStore();
 
   const [logs, setLogs] = useState<DebugLog[]>([]);
@@ -63,6 +64,8 @@ const DebugPanel = ({ onClose }: { onClose: () => void }) => {
   const [isHolding, setIsHolding] = useState(false);
   const [audioDiagnostics, setAudioDiagnostics] = useState<AudioDiagnosticsPayload | null>(null);
   const [vadDiagnostics, setVadDiagnostics] = useState<VadDiagnosticsPayload | null>(null);
+  const [panels, setPanels] = useState({ engine: true, audio: false, logs: true });
+  const [logTab, setLogTab] = useState<"live" | "backend">("live");
 
   const mountedRef = useRef(true);
   const isHoldingRef = useRef(false);
@@ -424,18 +427,39 @@ const DebugPanel = ({ onClose }: { onClose: () => void }) => {
     addLog("info", "Logs cleared");
   };
 
+  const refreshBackendLogs = useCallback(async () => {
+    if (!import.meta.env.DEV) {
+      addLog("warning", "Backend logs are only available in DEV builds");
+      return;
+    }
+    try {
+      const snapshot = await invoke<string[]>("get_logs");
+      if (Array.isArray(snapshot)) {
+        setBackendLogs(snapshot);
+      }
+    } catch (error) {
+      addLog("error", `Failed to fetch backend logs: ${error}`);
+    }
+  }, [addLog, setBackendLogs]);
+
+  useEffect(() => {
+    if (logTab === "backend") {
+      void refreshBackendLogs();
+    }
+  }, [logTab, refreshBackendLogs]);
+
   const getLogColor = (type: DebugLog["type"]) => {
     switch (type) {
       case "success":
-        return "text-emerald-400";
+        return "text-good";
       case "warning":
-        return "text-amber-400";
+        return "text-warn";
       case "error":
-        return "text-red-400";
+        return "text-bad";
       case "event":
-        return "text-cyan-400";
+        return "text-info";
       default:
-        return "text-slate-300";
+        return "text-muted";
     }
   };
 
@@ -475,445 +499,372 @@ const DebugPanel = ({ onClose }: { onClose: () => void }) => {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4">
-      <div className="flex h-[85vh] w-[900px] max-w-full flex-col overflow-hidden rounded-2xl border border-white/10 bg-slate-900 shadow-2xl">
+      <Card className="flex h-[85vh] w-[900px] max-w-full flex-col overflow-hidden bg-surface">
         {/* Header */}
-        <header className="flex items-center justify-between border-b border-white/10 bg-slate-800 px-5 py-3">
+        <header className="flex items-center justify-between border-b border-border bg-surface2 px-5 py-3">
           <div className="flex items-center gap-3">
             <span className="text-xl">🔧</span>
-            <h2 className="text-lg font-semibold text-white">Debug & Testing Panel</h2>
+            <h2 className="text-lg font-semibold text-fg">Debug & Testing Panel</h2>
           </div>
-          <button
-            type="button"
-            className="rounded-lg bg-white/10 px-4 py-1.5 text-sm font-medium text-white hover:bg-white/20"
-            onClick={onClose}
-          >
+          <Button variant="secondary" size="sm" onClick={onClose}>
             Close
-          </button>
+          </Button>
         </header>
 
         <div className="flex flex-1 overflow-hidden">
-          {/* Left panel - Status & Controls */}
-          <div className="w-80 flex-shrink-0 overflow-y-auto border-r border-white/10 p-4">
-            {/* Current State */}
-            <section className="mb-6">
-              <h3 className="mb-3 text-sm font-semibold uppercase tracking-wider text-slate-400">
-                Current State
-              </h3>
-              <div className="space-y-2 rounded-lg bg-slate-800/50 p-3">
-                <div className="flex justify-between">
-                  <span className="text-slate-400">HUD State:</span>
-                  <span
-                    className={`font-mono font-medium ${
-                      hudState === "listening"
-                        ? "text-cyan-400"
-                        : hudState === "processing"
-                          ? "text-purple-400"
-                          : "text-slate-300"
-                    }`}
-                  >
-                    {hudState}
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-400">Hotkey:</span>
-                  <span className="font-mono text-sm text-slate-300">{hotkeyStatus}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-400">Backend:</span>
-                  <span className="font-mono text-sm text-slate-300">{hotkeyBackend}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-400">Trigger:</span>
-                  <span className="max-w-[170px] truncate font-mono text-sm text-slate-300">
-                    {hotkeyTriggerDescription || "(pending)"}
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-400">ASR Backend:</span>
-                  <span className="font-mono text-sm text-slate-300">
-                    {asrFamily === "whisper"
-                      ? `whisper (${whisperBackend})`
-                      : "parakeet"}
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-400">Hotkey Mode:</span>
-                  <span className="font-mono text-sm text-slate-300">
-                    {settings?.hotkeyMode ?? "unknown"}
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-400">Capture:</span>
-                  <span className="font-mono text-sm text-slate-300">
-                    {audioDiagnostics
-                      ? audioDiagnostics.synthetic
-                        ? "synthetic"
-                        : "real"
-                      : "unknown"}
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-400">Sample Rate:</span>
-                  <span className="font-mono text-sm text-slate-300">
-                    {audioDiagnostics ? `${audioDiagnostics.sampleRate} Hz` : "—"}
-                  </span>
-                </div>
-                <div className="space-y-1">
-                  <div className="flex justify-between">
-                    <span className="text-slate-400">Mic Level:</span>
-                    <span className="font-mono text-sm text-slate-300">
-                      {audioDiagnostics ? `${audioDiagnostics.rms.toFixed(3)} rms` : "—"}
-                    </span>
+          {/* Left rail */}
+          <div className="w-80 flex-shrink-0 overflow-y-auto border-r border-border p-4">
+            <div className="space-y-4">
+              <AccordionSection
+                title="Engine + Models"
+                description="Hotkeys, runtime, health, and install status."
+                open={panels.engine}
+                onToggle={() => setPanels((p) => ({ ...p, engine: !p.engine }))}
+              >
+                <div className="grid gap-3">
+                  <div className="rounded-vibe border border-border bg-surface2 p-3 text-xs">
+                    <div className="flex justify-between gap-3">
+                      <span className="text-muted">HUD state</span>
+                      <span className="font-mono font-semibold text-fg">{hudState}</span>
+                    </div>
+                    <div className="mt-2 flex justify-between gap-3">
+                      <span className="text-muted">Hotkey</span>
+                      <span className="font-mono text-fg">{hotkeyStatus}</span>
+                    </div>
+                    <div className="mt-2 flex justify-between gap-3">
+                      <span className="text-muted">Hotkey backend</span>
+                      <span className="font-mono text-fg">{hotkeyBackend}</span>
+                    </div>
+                    <div className="mt-2 flex justify-between gap-3">
+                      <span className="text-muted">Trigger</span>
+                      <span className="max-w-[170px] truncate font-mono text-fg">
+                        {hotkeyTriggerDescription || "(pending)"}
+                      </span>
+                    </div>
+                    <div className="mt-2 flex justify-between gap-3">
+                      <span className="text-muted">ASR</span>
+                      <span className="font-mono text-fg">{asrLabel}</span>
+                    </div>
+                    <div className="mt-2 flex justify-between gap-3">
+                      <span className="text-muted">Hotkey mode</span>
+                      <span className="font-mono text-fg">{settings?.hotkeyMode ?? "—"}</span>
+                    </div>
                   </div>
-                  <div className="h-2 w-full overflow-hidden rounded bg-slate-900">
-                    <div
-                      className="h-full bg-cyan-500/70"
-                      style={{
-                        width: `${Math.min(
-                          100,
-                          ((audioDiagnostics?.rms ?? 0) / 0.12) * 100,
-                        )}%`,
-                      }}
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <MetricTile label="Latency" value={`${metrics?.lastLatencyMs ?? "—"} ms`} />
+                    <MetricTile
+                      label="CPU"
+                      value={
+                        typeof metrics?.averageCpuPercent === "number"
+                          ? `${metrics.averageCpuPercent.toFixed(1)} %`
+                          : "—"
+                      }
+                    />
+                    <MetricTile label="Slow" value={metrics ? String(metrics.consecutiveSlow) : "—"} />
+                    <MetricTile
+                      label="Perf"
+                      value={metrics?.performanceMode ? "Mode ON" : "Normal"}
                     />
                   </div>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-400">VAD:</span>
-                  <span
-                    className={`font-mono text-sm ${
-                      vadDiagnostics?.active ? "text-emerald-300" : "text-slate-300"
-                    }`}
-                  >
-                    {vadDiagnostics
-                      ? `${vadDiagnostics.backend} ${vadDiagnostics.active ? "active" : "inactive"}`
-                      : "—"}
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-400">VAD Score:</span>
-                  <span className="font-mono text-sm text-slate-300">
-                    {vadDiagnostics
-                      ? `${vadDiagnostics.score.toFixed(3)} / ${vadDiagnostics.threshold.toFixed(3)}`
-                      : "—"}
-                  </span>
-                </div>
-              </div>
-            </section>
 
-            {/* Diagnostics */}
-            <section className="mb-6">
-              <h3 className="mb-3 text-sm font-semibold uppercase tracking-wider text-slate-400">
-                Diagnostics
-              </h3>
-              <div className="space-y-3 rounded-lg bg-slate-800/50 p-3">
-                <label className="flex items-center gap-2 text-xs text-slate-200">
-                  <input
-                    type="checkbox"
-                    checked={settings?.debugTranscripts ?? false}
-                    onChange={(event) => {
-                      void handleToggleDebugTranscripts(event.target.checked);
-                    }}
-                    disabled={!settings}
-                  />
-                  Enable debug transcripts (auto-disables after 24h)
-                </label>
-                <div className="flex flex-wrap items-center gap-2 text-xs">
-                  <span className="font-semibold text-slate-300">Live Metrics</span>
-                  <span className="rounded-full bg-slate-900 px-2 py-1 text-[0.65rem] uppercase tracking-wide text-slate-300">
-                    {metrics?.performanceMode ? "Performance Mode" : "Normal"}
-                  </span>
-                  {import.meta.env.DEV && (
-                    <button
-                      type="button"
-                      className="rounded bg-white/10 px-2 py-1 text-[0.65rem] uppercase text-white hover:bg-white/20"
-                      onClick={() => {
-                        void (async () => {
-                          try {
-                            const snapshot = await invoke<string[]>("get_logs");
-                            if (Array.isArray(snapshot)) {
-                              setLogSnapshot(snapshot);
-                            }
-                          } catch (error) {
-                            addLog("error", `Failed to fetch logs: ${error}`);
-                          }
-                          toggleLogViewer(true);
-                        })();
+                  <label className="flex items-center gap-2 text-xs text-fg">
+                    <input
+                      type="checkbox"
+                      checked={settings?.debugTranscripts ?? false}
+                      onChange={(event) => {
+                        void handleToggleDebugTranscripts(event.target.checked);
                       }}
-                    >
-                      View Logs
-                    </button>
-                  )}
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <MetricTile
-                    label="Latency"
-                    value={`${metrics?.lastLatencyMs ?? "—"} ms`}
-                  />
-                  <MetricTile
-                    label="CPU"
-                    value={
-                      typeof metrics?.averageCpuPercent === "number"
-                        ? `${metrics.averageCpuPercent.toFixed(1)} %`
-                        : "—"
-                    }
-                  />
-                  <MetricTile
-                    label="Slow Count"
-                    value={metrics ? String(metrics.consecutiveSlow) : "—"}
-                  />
-                  <MetricTile label="HUD State" value={hudState.replace("-", " ")} />
-                </div>
-              </div>
-            </section>
+                      disabled={!settings}
+                    />
+                    Enable debug transcripts (auto-disables after 24h)
+                  </label>
 
-            {/* Model Status */}
-            <section className="mb-6">
-              <h3 className="mb-3 text-sm font-semibold uppercase tracking-wider text-slate-400">
-                Model Status
-              </h3>
-              <div className="space-y-2 rounded-lg bg-slate-800/50 p-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-400">Active ASR:</span>
-                  <span
-                    className={`rounded-full px-2 py-0.5 text-xs ${
-                      activeAsrModel?.status.state === "installed"
-                        ? "bg-emerald-500/20 text-emerald-300"
-                        : "bg-red-500/20 text-red-300"
-                    }`}
-                  >
-                    {activeAsrModel?.status.state ? `${asrLabel}: ${activeAsrModel.status.state}` : "unknown"}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-400">Whisper CT2:</span>
-                  <span
-                    className={`rounded-full px-2 py-0.5 text-xs ${
-                      whisperCt2Model?.status.state === "installed"
-                        ? "bg-emerald-500/20 text-emerald-300"
-                        : "bg-red-500/20 text-red-300"
-                    }`}
-                  >
-                    {whisperCt2Model?.status.state ?? "unknown"}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-400">Whisper ONNX:</span>
-                  <span
-                    className={`rounded-full px-2 py-0.5 text-xs ${
-                      whisperOnnxModel?.status.state === "installed"
-                        ? "bg-emerald-500/20 text-emerald-300"
-                        : "bg-red-500/20 text-red-300"
-                    }`}
-                  >
-                    {whisperOnnxModel?.status.state ?? "unknown"}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-400">Parakeet ASR:</span>
-                  <span
-                    className={`rounded-full px-2 py-0.5 text-xs ${
-                      parakeetModel?.status.state === "installed"
-                        ? "bg-emerald-500/20 text-emerald-300"
-                        : "bg-red-500/20 text-red-300"
-                    }`}
-                  >
-                    {parakeetModel?.status.state ?? "unknown"}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-400">VAD:</span>
-                  <span
-                    className={`rounded-full px-2 py-0.5 text-xs ${
-                      vadModel?.status.state === "installed"
-                        ? "bg-emerald-500/20 text-emerald-300"
-                        : "bg-red-500/20 text-red-300"
-                    }`}
-                  >
-                    {vadModel?.status.state ?? "unknown"}
-                  </span>
-                </div>
-              </div>
-            </section>
-
-            {/* Audio Devices */}
-            <section className="mb-6">
-              <h3 className="mb-3 text-sm font-semibold uppercase tracking-wider text-slate-400">
-                Audio Devices ({audioDevices.length})
-              </h3>
-              <div className="max-h-32 space-y-1 overflow-y-auto rounded-lg bg-slate-800/50 p-3">
-                {audioDevices.length === 0 ? (
-                  <p className="text-sm text-slate-500">No devices detected</p>
-                ) : (
-                  audioDevices.map((device) => (
-                    <div
-                      key={device.id}
-                      className={`truncate text-sm ${
-                        device.isDefault ? "text-cyan-300" : "text-slate-400"
-                      }`}
-                    >
-                      {device.isDefault && "★ "}
-                      {device.name}
+                  <div className="rounded-vibe border border-border bg-surface2 p-3 text-xs">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-muted">Active ASR</span>
+                      <span className="font-mono text-fg">{activeAsrModel?.status.state ?? "unknown"}</span>
                     </div>
-                  ))
-                )}
-              </div>
-            </section>
+                    <div className="mt-2 flex items-center justify-between gap-3">
+                      <span className="text-muted">VAD</span>
+                      <span className="font-mono text-fg">{vadModel?.status.state ?? "unknown"}</span>
+                    </div>
+                    <div className="mt-2 flex items-center justify-between gap-3">
+                      <span className="text-muted">Whisper CT2</span>
+                      <span className="font-mono text-fg">{whisperCt2Model?.status.state ?? "unknown"}</span>
+                    </div>
+                    <div className="mt-2 flex items-center justify-between gap-3">
+                      <span className="text-muted">Whisper ONNX</span>
+                      <span className="font-mono text-fg">{whisperOnnxModel?.status.state ?? "unknown"}</span>
+                    </div>
+                    <div className="mt-2 flex items-center justify-between gap-3">
+                      <span className="text-muted">Parakeet</span>
+                      <span className="font-mono text-fg">{parakeetModel?.status.state ?? "unknown"}</span>
+                    </div>
+                  </div>
 
-            {/* Test Actions */}
-            <section>
-              <h3 className="mb-3 text-sm font-semibold uppercase tracking-wider text-slate-400">
-                Test Actions
-              </h3>
-              <div className="space-y-2">
-                <button
-                  type="button"
-                  className="w-full rounded-lg bg-cyan-600 px-4 py-2 text-sm font-medium text-white hover:bg-cyan-500 disabled:opacity-50"
-                  onClick={handleTestDictation}
-                  disabled={hudState !== "idle"}
-                >
-                  🎙️ Test Dictation Flow
-                </button>
-                <button
-                  type="button"
-                  className="w-full rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500"
-                  onClick={handleReregisterHotkey}
-                >
-                  ⌨️ Re-register Hotkey
-                </button>
-                <button
-                  type="button"
-                  className="w-full rounded-lg bg-purple-600 px-4 py-2 text-sm font-medium text-white hover:bg-purple-500 disabled:opacity-50"
-                  onClick={handleTestAudio}
-                  disabled={isTestingAudio}
-                >
-                  🔊 Test Audio Devices
-                </button>
-                <button
-                  type="button"
-                  className="w-full rounded-lg bg-slate-700 px-4 py-2 text-sm font-medium text-white hover:bg-slate-600"
-                  onClick={handleClearLogs}
-                >
-                  🗑️ Clear Logs
-                </button>
-              </div>
-            </section>
+                  <div className="rounded-vibe border border-warn/40 bg-warn/10 p-3">
+                    <div className="text-xs font-semibold text-fg">Linux permissions</div>
+                    <div className="mt-1 text-xs text-muted">
+                      On Wayland, global hotkeys and paste injection require input permissions.
+                      If hotkeys/paste fail, enable Linux permissions in Settings and log out/in.
+                    </div>
+                  </div>
+                </div>
+              </AccordionSection>
 
-            {/* Linux Permissions Notice */}
-            <section className="mt-6">
-              <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3">
-                <h4 className="mb-1 text-sm font-semibold text-amber-300">
-                  Linux Permissions
-                </h4>
-                <p className="text-xs text-amber-200/80">
-                  On Linux Wayland, global hotkeys and paste injection use the kernel input
-                  devices. If hotkeys or paste-to-active-app don&apos;t work, open Settings and
-                  enable Linux permissions (input group + /dev/uinput), then log out and back in.
-                </p>
-              </div>
-            </section>
+              <AccordionSection
+                title="Audio + VAD + Devices"
+                description="Mic level, sample rate, VAD diagnostics, and device list."
+                open={panels.audio}
+                onToggle={() => setPanels((p) => ({ ...p, audio: !p.audio }))}
+              >
+                <div className="grid gap-3">
+                  <div className="rounded-vibe border border-border bg-surface2 p-3 text-xs">
+                    <div className="flex justify-between gap-3">
+                      <span className="text-muted">Capture</span>
+                      <span className="font-mono text-fg">
+                        {audioDiagnostics
+                          ? audioDiagnostics.synthetic
+                            ? "synthetic"
+                            : "real"
+                          : "unknown"}
+                      </span>
+                    </div>
+                    <div className="mt-2 flex justify-between gap-3">
+                      <span className="text-muted">Sample rate</span>
+                      <span className="font-mono text-fg">
+                        {audioDiagnostics ? `${audioDiagnostics.sampleRate} Hz` : "—"}
+                      </span>
+                    </div>
+                    <div className="mt-2 space-y-1">
+                      <div className="flex justify-between gap-3">
+                        <span className="text-muted">Mic level</span>
+                        <span className="font-mono text-fg">
+                          {audioDiagnostics ? `${audioDiagnostics.rms.toFixed(3)} rms` : "—"}
+                        </span>
+                      </div>
+                      <div className="h-2 w-full overflow-hidden rounded-vibe border border-border bg-bg">
+                        <div
+                          className="h-full bg-info/60"
+                          style={{
+                            width: `${Math.min(100, ((audioDiagnostics?.rms ?? 0) / 0.12) * 100)}%`,
+                          }}
+                        />
+                      </div>
+                    </div>
+                    <div className="mt-2 flex justify-between gap-3">
+                      <span className="text-muted">VAD</span>
+                      <span className="font-mono text-fg">
+                        {vadDiagnostics
+                          ? `${vadDiagnostics.backend} ${vadDiagnostics.active ? "active" : "inactive"}`
+                          : "—"}
+                      </span>
+                    </div>
+                    <div className="mt-2 flex justify-between gap-3">
+                      <span className="text-muted">VAD score</span>
+                      <span className="font-mono text-fg">
+                        {vadDiagnostics
+                          ? `${vadDiagnostics.score.toFixed(3)} / ${vadDiagnostics.threshold.toFixed(3)}`
+                          : "—"}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">
+                      Audio devices ({audioDevices.length})
+                    </div>
+                    <div className="max-h-40 space-y-1 overflow-y-auto rounded-vibe border border-border bg-surface2 p-3">
+                      {audioDevices.length === 0 ? (
+                        <p className="text-sm text-muted">No devices detected</p>
+                      ) : (
+                        audioDevices.map((device) => (
+                          <div
+                            key={device.id}
+                            className={`truncate text-sm ${device.isDefault ? "text-info" : "text-muted"}`}
+                          >
+                            {device.isDefault && "★ "}
+                            {device.name}
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </AccordionSection>
+            </div>
           </div>
 
-          {/* Right panel - Sandbox + Logs */}
+          {/* Right content */}
           <div className="flex flex-1 flex-col overflow-hidden">
-            <div className="border-b border-white/10 bg-slate-800/50 px-4 py-2">
-              <div className="flex items-center justify-between">
-                <h3 className="text-sm font-semibold uppercase tracking-wider text-slate-400">
-                  Dictation Sandbox
-                </h3>
-                <div className="flex items-center gap-2 text-xs">
-                  <span className="text-slate-500">Output</span>
-                  <select
-                    className="rounded bg-slate-900 px-2 py-1 text-slate-200"
-                    value={outputMode}
-                    onChange={(e) => {
-                      void handleSetOutputMode(e.target.value as "paste" | "emit-only");
-                    }}
-                  >
-                    <option value="emit-only">In sandbox</option>
-                    <option value="paste">Paste to active app</option>
-                  </select>
-                </div>
-              </div>
-            </div>
-            <div className="border-b border-white/10 bg-slate-950 p-3">
-              <p className="mb-2 text-xs text-slate-400">
-                The sandbox always mirrors transcription events. In "Paste to active app" mode,
-                the paste goes to the currently focused app (not this textbox).
-              </p>
-              <textarea
-                className="h-40 w-full resize-none rounded-lg border border-white/10 bg-slate-900 p-3 font-mono text-xs text-slate-200 outline-none focus:border-cyan-500/50"
-                value={sandboxText}
-                onChange={(e) => setSandboxText(e.target.value)}
-                placeholder="Transcriptions will appear here. You can also type to test output formatting."
-              />
-              <div className="mt-3 flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  className={`rounded-lg px-4 py-2 text-sm font-medium text-white transition-colors disabled:opacity-50 ${
-                    isHolding ? "bg-rose-600 hover:bg-rose-500" : "bg-cyan-600 hover:bg-cyan-500"
-                  }`}
-                  onPointerDown={handleHoldPointerDown}
-                  onPointerUp={handleHoldPointerUp}
-                  onPointerCancel={handleHoldPointerUp}
-                  disabled={hudState !== "idle" && !isHolding}
-                >
-                  {isHolding ? "Release to Stop" : "Hold to Talk"}
-                </button>
-                <button
-                  type="button"
-                  className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-50"
-                  onClick={() => {
-                    void handleToggleTalk();
-                  }}
-                  disabled={hudState === "processing"}
-                >
-                  {hudState === "idle" ? "Toggle Start" : hudState === "listening" ? "Toggle Stop" : "Processing..."}
-                </button>
-                <button
-                  type="button"
-                  className="rounded-lg bg-slate-700 px-4 py-2 text-sm font-medium text-white hover:bg-slate-600"
-                  onClick={handleClearSandbox}
-                >
-                  Clear
-                </button>
-              </div>
-            </div>
-
-            <div className="border-b border-white/10 bg-slate-800/50 px-4 py-2">
-              <h3 className="text-sm font-semibold uppercase tracking-wider text-slate-400">
-                Live Event Log
-              </h3>
-            </div>
-            <div className="flex-1 overflow-y-auto bg-slate-950 p-3 font-mono text-xs">
-              {logs.length === 0 ? (
-                <p className="text-slate-500">
-                  No logs yet. Try testing dictation or pressing your hotkey.
-                </p>
-              ) : (
-                logs.map((log) => (
-                  <div key={log.id} className="mb-1 flex gap-2">
-                    <span className="flex-shrink-0 text-slate-500">
-                      {log.timestamp.toLocaleTimeString()}
-                    </span>
-                    <span className={`flex-shrink-0 uppercase ${getLogColor(log.type)}`}>
-                      [{log.type}]
-                    </span>
-                    <span className="text-slate-300">{log.message}</span>
+            <div className="flex-1 overflow-y-auto p-4">
+              <AccordionSection
+                title="Logs + Actions"
+                description="Sandbox output, test actions, and logs."
+                open={panels.logs}
+                onToggle={() => setPanels((p) => ({ ...p, logs: !p.logs }))}
+              >
+                <div className="grid gap-4">
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      variant="primary"
+                      onClick={handleTestDictation}
+                      disabled={hudState !== "idle"}
+                    >
+                      Test Dictation Flow
+                    </Button>
+                    <Button variant="secondary" onClick={handleReregisterHotkey}>
+                      Re-register Hotkey
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      onClick={handleTestAudio}
+                      disabled={isTestingAudio}
+                    >
+                      Test Audio Devices
+                    </Button>
+                    <Button variant="ghost" onClick={handleClearLogs}>
+                      Clear Live Events
+                    </Button>
                   </div>
-                ))
-              )}
+
+                  <div className="rounded-vibe border border-border bg-surface2 p-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-semibold text-fg">Dictation sandbox</div>
+                        <div className="mt-0.5 text-xs text-muted">
+                          In "Paste" mode, output goes to the focused app (not this textbox).
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 text-xs">
+                        <span className="text-muted">Output</span>
+                        <Select
+                          width="md"
+                          size="sm"
+                          value={outputMode}
+                          onChange={(v) => void handleSetOutputMode(v as "paste" | "emit-only")}
+                          options={[
+                            { value: "emit-only", label: "In sandbox" },
+                            { value: "paste", label: "Paste to active app" },
+                          ]}
+                        />
+                      </div>
+                    </div>
+
+                    <textarea
+                      className="mt-3 h-40 w-full resize-none rounded-vibe border border-border bg-surface p-3 font-mono text-xs text-fg outline-none focus:border-accent/50"
+                      value={sandboxText}
+                      onChange={(e) => setSandboxText(e.target.value)}
+                      placeholder="Transcriptions will appear here. You can also type to test output formatting."
+                    />
+
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        className={`rounded-vibe border px-4 py-2 text-sm font-medium transition-colors disabled:opacity-50 ${
+                          isHolding
+                            ? "border-bad/40 bg-bad text-bg hover:bg-bad/90"
+                            : "border-accent/50 bg-accent text-bg hover:bg-accent/90"
+                        }`}
+                        onPointerDown={handleHoldPointerDown}
+                        onPointerUp={handleHoldPointerUp}
+                        onPointerCancel={handleHoldPointerUp}
+                        disabled={hudState !== "idle" && !isHolding}
+                      >
+                        {isHolding ? "Release to Stop" : "Hold to Talk"}
+                      </button>
+                      <Button
+                        variant="secondary"
+                        className="px-4"
+                        onClick={() => {
+                          void handleToggleTalk();
+                        }}
+                        disabled={hudState === "processing"}
+                      >
+                        {hudState === "idle"
+                          ? "Toggle Start"
+                          : hudState === "listening"
+                            ? "Toggle Stop"
+                            : "Processing..."}
+                      </Button>
+                      <Button variant="ghost" className="px-4" onClick={handleClearSandbox}>
+                        Clear
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div className="rounded-vibe border border-border bg-surface2 p-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="text-sm font-semibold text-fg">Logs</div>
+                      <Tabs
+                        value={logTab}
+                        onChange={(v) => setLogTab(v)}
+                        tabs={[
+                          { value: "live", label: "Live events" },
+                          { value: "backend", label: "Backend logs", disabled: !import.meta.env.DEV },
+                        ]}
+                      />
+                    </div>
+
+                    {logTab === "backend" && (
+                      <div className="mt-3 flex items-center justify-between gap-3">
+                        <div className="text-xs text-muted">
+                          Backend logs are available in DEV builds.
+                        </div>
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={() => {
+                            void refreshBackendLogs();
+                          }}
+                          disabled={!import.meta.env.DEV}
+                        >
+                          Refresh
+                        </Button>
+                      </div>
+                    )}
+
+                    <div className="mt-3 max-h-[260px] overflow-y-auto rounded-vibe border border-border bg-bg p-3 font-mono text-xs">
+                      {logTab === "live" ? (
+                        logs.length === 0 ? (
+                          <p className="text-muted">
+                            No live events yet. Try testing dictation or pressing your hotkey.
+                          </p>
+                        ) : (
+                          logs.map((log) => (
+                            <div key={log.id} className="mb-1 flex gap-2">
+                              <span className="flex-shrink-0 text-muted/70">
+                                {log.timestamp.toLocaleTimeString()}
+                              </span>
+                              <span className={`flex-shrink-0 uppercase ${getLogColor(log.type)}`}>
+                                [{log.type}]
+                              </span>
+                              <span className="text-fg">{log.message}</span>
+                            </div>
+                          ))
+                        )
+                      ) : backendLogs.length === 0 ? (
+                        <p className="text-muted">No backend log data yet.</p>
+                      ) : (
+                        <pre className="whitespace-pre-wrap text-fg">{backendLogs.join("\n")}</pre>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </AccordionSection>
             </div>
           </div>
         </div>
-      </div>
+      </Card>
     </div>
   );
 };
 
 const MetricTile = ({ label, value }: { label: string; value: string }) => (
-  <div className="rounded bg-slate-900/60 p-2">
-    <p className="text-[0.65rem] uppercase tracking-wide text-slate-500">{label}</p>
-    <p className="mt-1 text-sm font-semibold text-slate-100">{value}</p>
+  <div className="rounded-vibe border border-border bg-bg p-2">
+    <p className="text-[0.65rem] uppercase tracking-wide text-muted">{label}</p>
+    <p className="mt-1 text-sm font-semibold text-fg">{value}</p>
   </div>
 );
 

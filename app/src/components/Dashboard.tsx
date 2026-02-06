@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useAppStore } from "../state/appStore";
 import DebugPanel from "./DebugPanel";
+import { Badge, Button, Card, Kbd } from "../ui/primitives";
 
 const Dashboard = () => {
   const {
@@ -9,6 +10,7 @@ const Dashboard = () => {
     models,
     startDictation,
     settings,
+    metrics,
   } = useAppStore();
   const [showDebug, setShowDebug] = useState(false);
 
@@ -41,55 +43,86 @@ const Dashboard = () => {
   const modelsReady =
     asrModel?.status.state === "installed" && vadModel?.status.state === "installed";
 
+  const performanceMode = hudState === "performance-warning" || metrics?.performanceMode;
+  const healthTone: "good" | "warn" | "bad" =
+    hudState === "secure-blocked"
+      ? "bad"
+      : performanceMode || !modelsReady
+        ? "warn"
+        : "good";
+  const healthLabel =
+    hudState === "secure-blocked"
+      ? "Secure field"
+      : performanceMode
+        ? "Performance"
+        : !modelsReady
+          ? "Models"
+          : "Healthy";
+
   return (
-    <div className="flex min-h-screen flex-col bg-slate-900 text-slate-200">
-      <header className="flex items-center justify-between border-b border-white/10 px-6 py-4">
-        <h1 className="text-xl font-semibold text-white">Push-to-Talk STT</h1>
-        <div className="flex items-center gap-3">
-          <button
-            type="button"
-            className="rounded-md bg-slate-700 px-4 py-2 text-sm font-medium text-white hover:bg-slate-600"
-            onClick={() => setShowDebug(true)}
-          >
+    <div className="vibe-page vibe-grid flex min-h-screen flex-col bg-bg text-fg">
+      <header className="flex items-center justify-between border-b border-border bg-surface px-6 py-4">
+        <div className="flex items-baseline gap-3">
+          <h1 className="text-xl font-semibold tracking-tight text-fg">
+            Push-to-Talk STT
+          </h1>
+          <span className="text-xs text-muted">local-first dictation</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="hidden items-center gap-2 md:flex">
+            <Badge tone={healthTone}>{healthLabel}</Badge>
+            {metrics?.lastLatencyMs !== undefined && metrics?.lastLatencyMs > 0 && (
+              <span className="text-xs text-muted">
+                {Math.round(metrics.lastLatencyMs)}ms
+              </span>
+            )}
+          </div>
+          <Button variant="secondary" size="sm" onClick={() => setShowDebug(true)}>
             Debug
-          </button>
-          <button
-            type="button"
-            className="rounded-md bg-cyan-500 px-4 py-2 text-sm font-medium text-slate-900 hover:bg-cyan-400"
-            onClick={() => toggleSettings(true)}
-          >
+          </Button>
+          <Button variant="primary" size="sm" onClick={() => toggleSettings(true)}>
             Settings
-          </button>
+          </Button>
         </div>
       </header>
 
       <main className="flex flex-1 flex-col items-center justify-center gap-8 p-8">
-        <div className="text-center">
-          <div className="mb-4 text-6xl">
+        <div className="w-full max-w-2xl text-center">
+          <div className="mb-3 text-6xl">
             {hudState === "listening" && "🎙️"}
             {hudState === "processing" && "⚙️"}
             {hudState === "idle" && "🎤"}
             {hudState === "performance-warning" && "⚡"}
             {hudState === "secure-blocked" && "🔒"}
           </div>
-          <h2 className="text-2xl font-bold text-white">
+          <h2 className="text-2xl font-semibold tracking-tight text-fg">
             {hudState === "idle" && "Ready to Dictate"}
             {hudState === "listening" && "Listening..."}
             {hudState === "processing" && "Processing..."}
             {hudState === "performance-warning" && "Performance Mode"}
             {hudState === "secure-blocked" && "Secure Field Blocked"}
           </h2>
-          <p className="mt-2 text-slate-400">
-            Press <kbd className="rounded bg-slate-700 px-2 py-1 text-sm font-mono">Ctrl+Space</kbd> to start dictating
+          <p className="mt-2 text-muted">
+            Press <Kbd>Ctrl+Space</Kbd> to start dictating
           </p>
-          <button
-            type="button"
-            className="mt-4 rounded-lg bg-cyan-600 px-6 py-2.5 text-sm font-medium text-white hover:bg-cyan-500 disabled:opacity-50"
-            onClick={() => startDictation()}
-            disabled={hudState !== "idle"}
-          >
-            {hudState === "idle" ? "Start Dictation (Manual)" : hudState === "listening" ? "Listening..." : "Processing..."}
-          </button>
+          <div className="mt-4 flex items-center justify-center gap-2">
+            <Button
+              variant="primary"
+              size="lg"
+              onClick={() => startDictation()}
+              disabled={hudState !== "idle"}
+            >
+              {hudState === "idle"
+                ? "Start Dictation (Manual)"
+                : hudState === "listening"
+                  ? "Listening..."
+                  : "Processing..."}
+            </Button>
+            {hudState === "performance-warning" && (
+              <Badge tone="warn">Performance Mode</Badge>
+            )}
+            {hudState === "secure-blocked" && <Badge tone="bad">Secure Field</Badge>}
+          </div>
         </div>
 
         <div className="grid w-full max-w-2xl gap-4 md:grid-cols-2">
@@ -111,31 +144,27 @@ const Dashboard = () => {
                 : "Install VAD model in Settings"
             }
           />
-          <StatusCard
-            title="Audio Processing"
-            status="ready"
-            description="WebRTC APM active"
-          />
+          <StatusCard title="Audio Processing" status="ready" description="WebRTC APM active" />
         </div>
 
         {!modelsReady && (
-          <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-6 py-4 text-center">
-            <p className="text-amber-200">
-              Some required models are not installed. Open{" "}
+          <Card className="w-full max-w-2xl border-warn/30 bg-warn/10 px-6 py-4 text-center">
+            <p className="text-sm text-fg">
+              <span className="font-medium">Models not installed.</span> Open{" "}
               <button
                 type="button"
-                className="font-medium underline hover:text-amber-100"
+                className="rounded-vibe border border-border bg-surface2 px-2 py-0.5 font-medium text-fg shadow-[0_2px_0_hsl(var(--shadow)/0.18)] hover:bg-surface"
                 onClick={() => toggleSettings(true)}
               >
                 Settings
               </button>{" "}
               to download them.
             </p>
-          </div>
+          </Card>
         )}
       </main>
 
-      <footer className="border-t border-white/10 px-6 py-3 text-center text-xs text-slate-500">
+      <footer className="border-t border-border bg-surface px-6 py-3 text-center text-xs text-muted">
         Push-to-Talk STT - Local speech-to-text dictation
       </footer>
 
@@ -153,30 +182,23 @@ const StatusCard = ({
   status: "ready" | "not-installed" | "optional";
   description: string;
 }) => {
-  const statusColors = {
-    ready: "bg-emerald-500/20 text-emerald-300 border-emerald-500/30",
-    "not-installed": "bg-red-500/20 text-red-300 border-red-500/30",
-    optional: "bg-slate-500/20 text-slate-300 border-slate-500/30",
-  };
-
   const statusLabels = {
     ready: "Ready",
     "not-installed": "Not Installed",
     optional: "Optional",
   };
 
+  const tone: "neutral" | "good" | "warn" | "bad" | "info" =
+    status === "ready" ? "good" : status === "not-installed" ? "bad" : "neutral";
+
   return (
-    <div className="rounded-lg border border-white/10 bg-white/5 p-4">
-      <div className="flex items-center justify-between">
-        <h3 className="font-medium text-white">{title}</h3>
-        <span
-          className={`rounded-full border px-2 py-0.5 text-xs ${statusColors[status]}`}
-        >
-          {statusLabels[status]}
-        </span>
+    <Card className="p-4">
+      <div className="flex items-center justify-between gap-3">
+        <h3 className="font-medium text-fg">{title}</h3>
+        <Badge tone={tone}>{statusLabels[status]}</Badge>
       </div>
-      <p className="mt-2 text-sm text-slate-400">{description}</p>
-    </div>
+      <p className="mt-2 text-sm text-muted">{description}</p>
+    </Card>
   );
 };
 

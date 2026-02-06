@@ -548,7 +548,7 @@ fn show_status_overlay(app: &AppHandle) {
         .visible(false)  // Start hidden to avoid GTK assertions during realization
         .skip_taskbar(true)
         .resizable(false)
-        .inner_size(200.0, 200.0)
+        .inner_size(560.0, 180.0)
         .focused(false)
         .focusable(false)
         .visible_on_all_workspaces(true)
@@ -583,8 +583,11 @@ fn position_overlay_deferred(window: tauri::WebviewWindow, show_after: bool) {
 
         if let Some(monitor) = monitor {
             let size = monitor.size();
-            let x = (size.width as i32 / 2) - 100; // 100 = half of 200px window width
-            let y = size.height as i32 - 250; // 250px from bottom
+            let overlay_width = 560i32;
+            let overlay_height = 180i32;
+            let margin_bottom = 80i32;
+            let x = (size.width as i32 - overlay_width) / 2;
+            let y = size.height as i32 - overlay_height - margin_bottom;
             tracing::debug!("Positioning overlay at ({}, {})", x, y);
             let _ = window.set_position(PhysicalPosition::new(x, y));
         } else {

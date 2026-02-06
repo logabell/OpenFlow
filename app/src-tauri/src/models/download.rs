@@ -7,7 +7,7 @@ use std::{
 use anyhow::{anyhow, Context, Result};
 use bzip2::read::BzDecoder;
 use flate2::read::GzDecoder;
-use regex::Regex;
+use globset::{Glob, GlobSet, GlobSetBuilder};
 use reqwest::blocking::Client;
 use serde::Deserialize;
 use tar::Archive;
@@ -443,17 +443,21 @@ fn list_hf_repo_files(client: &Client, plan: &HfRepoDownloadPlan) -> Result<Vec<
         .json()
         .context("parse hf metadata")?;
 
-    let include = compile_patterns(&plan.include)?;
-    let exclude = compile_patterns(&plan.exclude)?;
+    let include = compile_globset(&plan.include)?;
+    let exclude = compile_globset(&plan.exclude)?;
 
     let mut files = Vec::new();
     for sibling in info.siblings {
-        let filename = sibling.rfilename;
-        if !include.is_empty() && !matches_any(&include, &filename) {
-            continue;
+        let filename = sibling.rfilename.replace('\\', "/");
+        if let Some(include) = &include {
+            if !include.is_match(&filename) {
+                continue;
+            }
         }
-        if !exclude.is_empty() && matches_any(&exclude, &filename) {
-            continue;
+        if let Some(exclude) = &exclude {
+            if exclude.is_match(&filename) {
+                continue;
+            }
         }
         let uri = format!(
             "https://huggingface.co/{}/resolve/{}/{}",
@@ -469,32 +473,86 @@ fn list_hf_repo_files(client: &Client, plan: &HfRepoDownloadPlan) -> Result<Vec<
     Ok(files)
 }
 
-fn compile_patterns(patterns: &[String]) -> Result<Vec<Regex>> {
-    let mut compiled = Vec::new();
+fn compile_globset(patterns: &[String]) -> Result<Option<GlobSet>> {
+    if patterns.is_empty() {
+        return Ok(None);
+    }
+    let mut builder = GlobSetBuilder::new();
     for pattern in patterns {
-        compiled.push(Regex::new(&wildcard_to_regex(pattern))?);
+        let glob =
+            Glob::new(pattern).with_context(|| format!("invalid glob pattern: {}", pattern))?;
+        builder.add(glob);
     }
-    Ok(compiled)
+    let set = builder.build().context("build globset")?;
+    Ok(Some(set))
 }
 
-fn matches_any(patterns: &[Regex], value: &str) -> bool {
-    patterns.iter().any(|pattern| pattern.is_match(value))
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
 
-fn wildcard_to_regex(pattern: &str) -> String {
-    let mut regex = String::from("^");
-    for ch in pattern.chars() {
-        match ch {
-            '*' => regex.push_str(".*"),
-            '?' => regex.push('.'),
-            '.' => regex.push_str("\\."),
-            '+' | '(' | ')' | '|' | '^' | '$' | '{' | '}' | '[' | ']' | '\\' => {
-                regex.push('\\');
-                regex.push(ch);
-            }
-            _ => regex.push(ch),
-        }
+    #[test]
+    fn glob_double_star_matches_root_and_nested() {
+        let set = compile_globset(&["**/*.json".to_string()])
+            .unwrap()
+            .unwrap();
+        assert!(set.is_match("config.json"));
+        assert!(set.is_match("subdir/config.json"));
     }
-    regex.push('$');
-    regex
+
+    #[test]
+    fn glob_excludes_apply() {
+        let include = compile_globset(&["**/*.onnx".to_string()])
+            .unwrap()
+            .unwrap();
+        let exclude = compile_globset(&["**/*.int8.onnx".to_string()])
+            .unwrap()
+            .unwrap();
+        assert!(include.is_match("model.onnx"));
+        assert!(include.is_match("model.int8.onnx"));
+        assert!(!exclude.is_match("model.onnx"));
+        assert!(exclude.is_match("model.int8.onnx"));
+    }
+
+    // Metadata-only smoke test against HuggingFace API.
+    // Keeps assertions minimal to reduce flake.
+    #[test]
+    fn hf_metadata_filters_non_empty_for_known_repos() {
+        let client = Client::builder()
+            .timeout(Duration::from_secs(20))
+            .build()
+            .expect("client");
+
+        // Faster-Whisper CT2 (should have root-level files like config/tokenizer json).
+        let ct2_plan = HfRepoDownloadPlan {
+            repo: "Systran/faster-whisper-tiny".into(),
+            revision: "main".into(),
+            destination: PathBuf::from("/tmp/unused"),
+            include: vec!["**/*.bin".into(), "**/*.json".into(), "**/*.txt".into()],
+            exclude: Vec::new(),
+        };
+        let ct2_files = list_hf_repo_files(&client, &ct2_plan).expect("ct2 list");
+        assert!(!ct2_files.is_empty(), "ct2 filter returned no files");
+
+        // Sherpa ONNX whisper float plan should exclude int8 models.
+        let onnx_plan = HfRepoDownloadPlan {
+            repo: "csukuangfj/sherpa-onnx-whisper-tiny".into(),
+            revision: "main".into(),
+            destination: PathBuf::from("/tmp/unused"),
+            include: vec![
+                "**/*.onnx".into(),
+                "**/*.weights".into(),
+                "**/*.txt".into(),
+                "**/*.json".into(),
+            ],
+            exclude: vec!["**/*.int8.onnx".into()],
+        };
+        let onnx_files = list_hf_repo_files(&client, &onnx_plan).expect("onnx list");
+        assert!(!onnx_files.is_empty(), "onnx filter returned no files");
+        assert!(
+            !onnx_files.iter().any(|f| f.path.ends_with(".int8.onnx")),
+            "exclude glob did not exclude .int8.onnx files"
+        );
+    }
 }

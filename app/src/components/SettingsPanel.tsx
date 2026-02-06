@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "../state/appStore";
+import { AccordionSection, Badge, Button, Card, Disclosure, Select } from "../ui/primitives";
 import type {
   AppSettings,
   AudioDevice,
@@ -27,23 +28,11 @@ type LinuxPermissionsStatus = {
   details: string[];
 };
 
-const RECOMMENDED_SINGLE_KEYS = [
+const PRESET_SINGLE_KEYS = [
   "RightAlt",
   "RightCtrl",
   "ScrollLock",
   "Pause",
-  "F13",
-  "F14",
-  "F15",
-  "F16",
-  "F17",
-  "F18",
-  "F19",
-  "F20",
-  "F21",
-  "F22",
-  "F23",
-  "F24",
 ] as const;
 
 type WhisperSize = "tiny" | "base" | "small" | "medium" | "large-v3" | "large-v3-turbo";
@@ -112,10 +101,8 @@ function resolveWhisperAssetName(
   return `whisper-onnx-${size}${langSuffix}-${precision}`;
 }
 
-function recommendedKeyOrCustom(value: string): string {
-  return RECOMMENDED_SINGLE_KEYS.includes(value as (typeof RECOMMENDED_SINGLE_KEYS)[number])
-    ? value
-    : "__custom__";
+function isPresetSingleKey(value: string): boolean {
+  return PRESET_SINGLE_KEYS.includes(value as (typeof PRESET_SINGLE_KEYS)[number]);
 }
 
 const SettingsPanel = () => {
@@ -128,8 +115,6 @@ const SettingsPanel = () => {
     uninstallModelAsset,
     audioDevices,
     refreshAudioDevices,
-    downloadLogs,
-    clearDownloadLogs,
   } = useAppStore();
 
   const [draft, setDraft] = useState<AppSettings | null>(null);
@@ -137,6 +122,7 @@ const SettingsPanel = () => {
     useState<LinuxPermissionsStatus | null>(null);
   const [linuxSetupBusy, setLinuxSetupBusy] = useState(false);
   const [linuxSetupMessage, setLinuxSetupMessage] = useState<string | null>(null);
+  const [sections, setSections] = useState({ general: true, models: true, linux: false });
 
   const refreshLinuxPermissions = useCallback(async () => {
     try {
@@ -157,20 +143,37 @@ const SettingsPanel = () => {
     void refreshAudioDevices();
   }, [refreshAudioDevices]);
 
+  const lastLoadedSettingsRef = useRef<AppSettings | null>(null);
+
   useEffect(() => {
-    if (settings) {
+    if (!settings) {
+      return;
+    }
+
+    const lastLoaded = lastLoadedSettingsRef.current;
+    const draftMatchesLastLoaded =
+      Boolean(draft && lastLoaded) &&
+      JSON.stringify(draft) === JSON.stringify(lastLoaded);
+
+    // Keep the draft stable if the user has unsaved edits.
+    if (!draft || draftMatchesLastLoaded) {
       setDraft(settings);
     }
-  }, [settings]);
 
-  const parakeetModel = useMemo(
-    () => models.find((model) => model.kind === "parakeet"),
-    [models],
+    lastLoadedSettingsRef.current = settings;
+  }, [settings, draft]);
+
+  const applyImmediateSettings = useCallback(
+    async (partial: Partial<AppSettings>) => {
+      if (!settings) {
+        return;
+      }
+      await updateSettings({ ...settings, ...partial });
+      setDraft((prev) => (prev ? { ...prev, ...partial } : prev));
+    },
+    [settings, updateSettings],
   );
-  const vadModel = useMemo(
-    () => models.find((model) => model.kind === "vad"),
-    [models],
-  );
+
   if (!draft) {
     return null;
   }
@@ -208,70 +211,866 @@ const SettingsPanel = () => {
 
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-6">
-      <div className="max-h-[90vh] w-[720px] max-w-full overflow-y-auto rounded-2xl bg-[#0f172a] p-8 text-slate-200 shadow-2xl">
+      <div className="relative flex max-h-[90vh] w-[720px] max-w-full flex-col overflow-hidden rounded-vibe border border-border bg-surface p-6 text-fg shadow-[0_6px_0_hsl(var(--shadow)/0.25),0_30px_90px_hsl(var(--shadow)/0.35)]">
         <header className="flex items-center justify-between">
-          <h2 className="text-xl font-semibold">Settings</h2>
-          <button
-            type="button"
-            className="rounded-full bg-white/5 px-3 py-1 text-sm text-white hover:bg-white/10"
-            onClick={() => toggleSettings(false)}
-          >
-            Close
-          </button>
+          <h2 className="text-xl font-semibold tracking-tight">Settings</h2>
+          <div className="flex items-center gap-2">
+            <Button variant="ghost" size="sm" onClick={() => toggleSettings(false)}>
+              Close
+            </Button>
+          </div>
         </header>
 
-        <div className="mt-6 space-y-6">
-          <GeneralSection draft={draft} onChange={handleChange} />
-          <LinuxSetupSection
-            status={linuxPermissions}
-            busy={linuxSetupBusy}
-            message={linuxSetupMessage}
-            showOverlayOnWayland={draft.showOverlayOnWayland}
-            onChangeShowOverlayOnWayland={(value) =>
-              handleChange("showOverlayOnWayland", value)
-            }
-            onEnable={handleEnableLinuxPermissions}
-            onRefresh={refreshLinuxPermissions}
-          />
-          <SpeechSection draft={draft} onChange={handleChange} />
-          <AudioSection
-            draft={draft}
-            audioDevices={audioDevices}
-            onChange={handleChange}
-            onRefresh={refreshAudioDevices}
-          />
-          <AutocleanSection draft={draft} onChange={handleChange} />
-          <ModelSection
-            models={models}
-            parakeetModel={parakeetModel}
-            vadModel={vadModel}
-            downloadLogs={downloadLogs}
-            onInstallAsset={(name) => {
-              void installModelAsset(name);
-            }}
-            onUninstallAsset={(name) => {
-              void uninstallModelAsset(name);
-            }}
-            onClearLogs={clearDownloadLogs}
-          />
+        <div className="mt-6 flex-1 overflow-y-auto pr-2">
+          <div className="space-y-4">
+            <AccordionSection
+              title="General"
+              description="Audio input, VAD, autoclean, hotkey mode, and theme."
+              open={sections.general}
+              onToggle={() => setSections((s) => ({ ...s, general: !s.general }))}
+            >
+              <GeneralSection
+                draft={draft}
+                audioDevices={audioDevices}
+                onChange={handleChange}
+                onRefreshDevices={refreshAudioDevices}
+              />
+            </AccordionSection>
+
+            <AccordionSection
+              title="Models"
+              description="Guided setup plus advanced Whisper controls."
+              open={sections.models}
+              onToggle={() => setSections((s) => ({ ...s, models: !s.models }))}
+            >
+              <ModelsSection
+                draft={draft}
+                models={models}
+                onChange={handleChange}
+                onInstallAsset={(name) => void installModelAsset(name)}
+                onUninstallAsset={(name) => void uninstallModelAsset(name)}
+                onApplyImmediate={applyImmediateSettings}
+              />
+            </AccordionSection>
+
+            <AccordionSection
+              title="Linux Setup"
+              description="Wayland paste/hotkey permissions overview and one-click setup."
+              open={sections.linux}
+              onToggle={() => setSections((s) => ({ ...s, linux: !s.linux }))}
+            >
+              <LinuxSetupSection
+                status={linuxPermissions}
+                busy={linuxSetupBusy}
+                message={linuxSetupMessage}
+                showOverlayOnWayland={draft.showOverlayOnWayland}
+                onChangeShowOverlayOnWayland={(value) =>
+                  handleChange("showOverlayOnWayland", value)
+                }
+                onEnable={handleEnableLinuxPermissions}
+                onRefresh={refreshLinuxPermissions}
+              />
+            </AccordionSection>
+          </div>
         </div>
 
-        <footer className="mt-8 flex justify-end gap-3">
-          <button
-            type="button"
-            className="rounded-md border border-white/10 px-4 py-2 text-sm text-slate-300 hover:bg-white/10"
-            onClick={() => toggleSettings(false)}
-          >
+        <footer className="mt-6 flex justify-end gap-3">
+          <Button variant="secondary" onClick={() => toggleSettings(false)}>
             Cancel
-          </button>
-          <button
-            type="button"
-            className="rounded-md bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-400"
-            onClick={handleSave}
-          >
+          </Button>
+          <Button variant="primary" onClick={handleSave}>
             Save changes
-          </button>
+          </Button>
         </footer>
+      </div>
+    </div>
+  );
+};
+
+function normalizeWhisperLanguage(size: WhisperSize, language: WhisperLanguage): WhisperLanguage {
+  return size === "large-v3" || size === "large-v3-turbo" ? "multi" : language;
+}
+
+type WhisperVariant = {
+  backend: WhisperBackend;
+  size: WhisperSize;
+  language: WhisperLanguage;
+  precision: WhisperPrecision;
+};
+
+function whisperVariantToSettings(variant: WhisperVariant): Partial<AppSettings> {
+  const language = normalizeWhisperLanguage(variant.size, variant.language);
+  return {
+    asrFamily: "whisper",
+    whisperBackend: variant.backend,
+    whisperModel: variant.size as AppSettings["whisperModel"],
+    whisperModelLanguage: language as AppSettings["whisperModelLanguage"],
+    whisperPrecision: variant.precision as AppSettings["whisperPrecision"],
+  };
+}
+
+function whisperVariantAssetName(variant: WhisperVariant): string {
+  const language = normalizeWhisperLanguage(variant.size, variant.language);
+  return resolveWhisperAssetName(variant.backend, variant.size, language, variant.precision);
+}
+
+function parseWhisperAssetName(name: string): WhisperVariant | null {
+  const sizeIds = [...WHISPER_SIZES.map((s) => s.id)].sort((a, b) => b.length - a.length);
+
+  if (name.startsWith("whisper-ct2-")) {
+    const rest = name.slice("whisper-ct2-".length);
+    const isEn = rest.endsWith("-en");
+    const size = (isEn ? rest.slice(0, -3) : rest) as WhisperSize;
+    if (!sizeIds.includes(size)) {
+      return null;
+    }
+    return {
+      backend: "ct2",
+      size,
+      language: isEn ? "en" : "multi",
+      precision: "int8",
+    };
+  }
+
+  if (name.startsWith("whisper-onnx-")) {
+    const rest = name.slice("whisper-onnx-".length);
+    const size = sizeIds.find((candidate) => rest.startsWith(candidate)) as WhisperSize | undefined;
+    if (!size) {
+      return null;
+    }
+
+    let suffix = rest.slice(size.length);
+    if (suffix.startsWith("-")) {
+      suffix = suffix.slice(1);
+    }
+    const suffixParts = suffix.split("-").filter(Boolean);
+    const language: WhisperLanguage = suffixParts.includes("en") ? "en" : "multi";
+    const precision: WhisperPrecision = suffixParts.includes("float") ? "float" : "int8";
+    return {
+      backend: "onnx",
+      size,
+      language,
+      precision,
+    };
+  }
+
+  return null;
+}
+
+function statusLabel(status: ModelStateKind) {
+  if (status.state === "installed") return "Installed";
+  if (status.state === "downloading") return `Downloading ${Math.round(status.progress * 100)}%`;
+  if (status.state === "error") return "Error";
+  return "Not installed";
+}
+
+const CompactDownloadRow = ({
+  title,
+  subtitle,
+  record,
+  assetName,
+  onInstall,
+}: {
+  title: string;
+  subtitle?: string;
+  record: ModelRecord | undefined;
+  assetName: string;
+  onInstall: (name: string) => void;
+}) => {
+  const status = record?.status ?? ({ state: "notInstalled" } as const);
+  const installed = status.state === "installed";
+  const downloading = status.state === "downloading";
+  const available = Boolean(record) && assetName.length > 0;
+
+  return (
+    <div className="rounded-vibe border border-border bg-surface2 p-4">
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <div className="truncate text-sm font-semibold text-fg">{title}</div>
+          {subtitle && <div className="mt-0.5 text-xs text-muted">{subtitle}</div>}
+          <div className="mt-2 flex flex-wrap gap-2 text-xs text-muted">
+            <span className="rounded-vibe border border-border bg-surface px-2 py-1">
+              Status: <span className="font-medium text-fg">{statusLabel(status)}</span>
+            </span>
+            <span className="rounded-vibe border border-border bg-surface px-2 py-1">
+              Download size:{" "}
+              <span className="font-medium text-fg">{formatBytes(record?.sizeBytes ?? 0)}</span>
+            </span>
+          </div>
+        </div>
+        <Button
+          variant={installed ? "secondary" : "primary"}
+          size="sm"
+          disabled={!available || installed || downloading}
+          title={!available ? "Unavailable in model manifest" : undefined}
+          onClick={() => onInstall(assetName)}
+        >
+          {installed ? "Installed" : downloading ? "Downloading…" : "Download"}
+        </Button>
+      </div>
+      {downloading && (
+        <div className="mt-3 h-2 w-full overflow-hidden rounded-vibe border border-border bg-surface">
+          <div
+            className="h-full bg-info"
+            style={{
+              width: `${Math.min(100, Math.max(0, Math.round((status.progress ?? 0) * 100)))}%`,
+            }}
+          />
+        </div>
+      )}
+      {status.state === "error" && (
+        <div className="mt-3 rounded-vibe border border-bad/35 bg-bad/10 p-3 text-xs text-muted">
+          {status.message}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const ModelsSection = ({
+  draft,
+  models,
+  onChange,
+  onInstallAsset,
+  onUninstallAsset,
+  onApplyImmediate,
+}: {
+  draft: AppSettings;
+  models: ModelRecord[];
+  onChange: <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => void;
+  onInstallAsset: (name: string) => void;
+  onUninstallAsset: (name: string) => void;
+  onApplyImmediate: (partial: Partial<AppSettings>) => Promise<void>;
+}) => {
+  const vadModel = useMemo(
+    () => models.find((model) => model.kind === "vad"),
+    [models],
+  );
+  const parakeetModel = useMemo(
+    () => models.find((model) => model.kind === "parakeet"),
+    [models],
+  );
+
+  const guidedVariant = useMemo((): WhisperVariant => {
+    const size = draft.whisperModel as WhisperSize;
+    const language = normalizeWhisperLanguage(
+      size,
+      draft.whisperModelLanguage as WhisperLanguage,
+    );
+    return {
+      backend: draft.whisperBackend as WhisperBackend,
+      size,
+      language,
+      precision: draft.whisperPrecision as WhisperPrecision,
+    };
+  }, [draft.whisperBackend, draft.whisperModel, draft.whisperModelLanguage, draft.whisperPrecision]);
+
+  const selectedWhisperAssetName = useMemo(
+    () => whisperVariantAssetName(guidedVariant),
+    [guidedVariant],
+  );
+  const selectedWhisperRecord = useMemo(
+    () => models.find((m) => m.name === selectedWhisperAssetName),
+    [models, selectedWhisperAssetName],
+  );
+
+  const currentWhisperAsset = useMemo(
+    () =>
+      resolveWhisperAssetName(
+        draft.whisperBackend,
+        draft.whisperModel,
+        draft.whisperModelLanguage,
+        draft.whisperPrecision,
+      ),
+    [
+      draft.whisperBackend,
+      draft.whisperModel,
+      draft.whisperModelLanguage,
+      draft.whisperPrecision,
+    ],
+  );
+  const currentAsrRecord = useMemo(() => {
+    if (draft.asrFamily === "parakeet") return parakeetModel;
+    return models.find((m) => m.name === currentWhisperAsset);
+  }, [draft.asrFamily, parakeetModel, models, currentWhisperAsset]);
+
+  const requiredReady =
+    Boolean(currentAsrRecord && currentAsrRecord.status.state === "installed") &&
+    Boolean(vadModel && vadModel.status.state === "installed");
+
+  const activeAsrAssetName =
+    draft.asrFamily === "parakeet" ? parakeetModel?.name ?? "" : currentWhisperAsset;
+
+  const [pendingAutoActivate, setPendingAutoActivate] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!pendingAutoActivate) return;
+    const record = models.find((m) => m.name === pendingAutoActivate);
+    if (!record) return;
+    if (record.status.state === "installed") {
+      const parsed = parseWhisperAssetName(pendingAutoActivate);
+      if (parsed) {
+        void onApplyImmediate(whisperVariantToSettings(parsed));
+      }
+      setPendingAutoActivate(null);
+    }
+    if (record.status.state === "error") {
+      setPendingAutoActivate(null);
+    }
+  }, [models, onApplyImmediate, pendingAutoActivate]);
+
+  const setFamily = useCallback(
+    (family: AppSettings["asrFamily"]) => {
+      onChange("asrFamily", family);
+      void onApplyImmediate({ asrFamily: family });
+    },
+    [onApplyImmediate, onChange],
+  );
+
+  const confirmUninstall = useCallback((assetName: string, isActive: boolean) => {
+    const message =
+      (isActive
+        ? "This model is currently active. Uninstalling it may break transcription until you select another model.\n\n"
+        : "") +
+      `Uninstall ${assetName}?`;
+    return window.confirm(message);
+  }, []);
+
+  const installedAsrAssets = useMemo(() => {
+    return models
+      .filter((m) => m.status.state === "installed")
+      .filter((m) => m.kind === "parakeet" || m.kind === "whisper-ct2" || m.kind === "whisper-onnx");
+  }, [models]);
+
+  const selectWhisperVariant = useCallback(
+    (variant: WhisperVariant, installed: boolean) => {
+      const normalizedLanguage = normalizeWhisperLanguage(variant.size, variant.language);
+      onChange("asrFamily", "whisper");
+      onChange("whisperBackend", variant.backend as AppSettings["whisperBackend"]);
+      onChange("whisperModel", variant.size as AppSettings["whisperModel"]);
+      onChange(
+        "whisperModelLanguage",
+        normalizedLanguage as AppSettings["whisperModelLanguage"],
+      );
+      onChange("whisperPrecision", variant.precision as AppSettings["whisperPrecision"]);
+
+      if (installed) {
+        void onApplyImmediate(
+          whisperVariantToSettings({ ...variant, language: normalizedLanguage }),
+        );
+      }
+    },
+    [onApplyImmediate, onChange],
+  );
+
+  return (
+    <div className="grid gap-5">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <div className="text-sm font-semibold text-fg">Guided model setup</div>
+          <div className="mt-0.5 text-xs text-muted">Download and pick your default engine.</div>
+        </div>
+        {requiredReady ? (
+          <span className="text-xs font-semibold text-good">Ready</span>
+        ) : (
+          <span className="text-xs font-semibold text-warn">Needs setup</span>
+        )}
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-2">
+        <Card
+          className={
+            "relative cursor-pointer p-4 transition-colors hover:bg-surface2 " +
+            (draft.asrFamily === "parakeet" ? "border-accent/55 bg-accent/5" : "")
+          }
+          onClick={() => setFamily("parakeet")}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") setFamily("parakeet");
+          }}
+        >
+          {draft.asrFamily === "parakeet" && (
+            <span className="absolute right-3 top-3 inline-flex h-6 w-6 items-center justify-center rounded-full border border-accent/40 bg-accent/15 text-accent">
+              <svg viewBox="0 0 20 20" className="h-4 w-4" aria-hidden="true">
+                <path
+                  d="M4.5 10.25L8.25 14L15.75 6.5"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </span>
+          )}
+          <div className="text-sm font-semibold text-fg">Fast (Parakeet ASR) (ONNX)</div>
+          <div className="mt-1 text-xs text-muted">Low latency, great default.</div>
+        </Card>
+        <Card
+          className={
+            "relative cursor-pointer p-4 transition-colors hover:bg-surface2 " +
+            (draft.asrFamily === "whisper" ? "border-accent/55 bg-accent/5" : "")
+          }
+          onClick={() => setFamily("whisper")}
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") setFamily("whisper");
+          }}
+        >
+          {draft.asrFamily === "whisper" && (
+            <span className="absolute right-3 top-3 inline-flex h-6 w-6 items-center justify-center rounded-full border border-accent/40 bg-accent/15 text-accent">
+              <svg viewBox="0 0 20 20" className="h-4 w-4" aria-hidden="true">
+                <path
+                  d="M4.5 10.25L8.25 14L15.75 6.5"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </span>
+          )}
+          <div className="text-sm font-semibold text-fg">
+            Accuracy First (Whisper ASR)
+          </div>
+          <div className="mt-1 text-xs text-muted">Best quality; pick a size.</div>
+        </Card>
+      </div>
+
+      <div className="grid gap-3">
+        <div className="text-xs font-medium uppercase tracking-wide text-muted">Required</div>
+
+        <Card className="p-4">
+          <div className="text-sm font-semibold text-fg">Voice Activity Detection (Silero)</div>
+          <div className="mt-1 text-xs text-muted">Required for gating recording.</div>
+          <div className="mt-3">
+            <CompactDownloadRow
+              title="Silero VAD"
+              record={vadModel}
+              assetName={vadModel?.name ?? ""}
+              onInstall={onInstallAsset}
+            />
+          </div>
+        </Card>
+
+        {draft.asrFamily === "parakeet" && (
+          <Card className="p-4">
+            <div className="text-sm font-semibold text-fg">Parakeet availability</div>
+            <div className="mt-1 text-xs text-muted">Download, use, or uninstall.</div>
+            <div className="mt-3 rounded-vibe border border-border bg-surface2 p-4">
+              <div className="flex items-start justify-between gap-4">
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-semibold text-fg">Parakeet ASR</div>
+                  <div className="mt-0.5 text-xs text-muted">
+                    Status:{" "}
+                    <span className="font-medium text-fg">
+                      {statusLabel(parakeetModel?.status ?? { state: "notInstalled" })}
+                    </span>
+                  </div>
+                  <div className="mt-2 text-xs text-muted">
+                    Download size:{" "}
+                    <span className="font-medium text-fg">
+                      {formatBytes(parakeetModel?.sizeBytes ?? 0)}
+                    </span>
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                  <Button
+                    variant={parakeetModel?.status.state === "installed" ? "secondary" : "primary"}
+                    size="sm"
+                    disabled={!parakeetModel || parakeetModel.status.state === "downloading"}
+                    onClick={() => {
+                      if (!parakeetModel) return;
+                      if (parakeetModel.status.state === "installed") {
+                        void onApplyImmediate({ asrFamily: "parakeet" });
+                      } else {
+                        onInstallAsset(parakeetModel.name);
+                      }
+                    }}
+                    title={!parakeetModel ? "Unavailable in model manifest" : undefined}
+                  >
+                    {!parakeetModel
+                      ? "Unavailable"
+                      : parakeetModel.status.state === "installed"
+                        ? "Use"
+                        : parakeetModel.status.state === "downloading"
+                          ? "Downloading…"
+                          : "Download"}
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={!parakeetModel || parakeetModel.status.state !== "installed"}
+                    onClick={() => {
+                      if (!parakeetModel) return;
+                      const isActive = activeAsrAssetName === parakeetModel.name;
+                      if (!confirmUninstall(parakeetModel.name, isActive)) return;
+                      onUninstallAsset(parakeetModel.name);
+                    }}
+                  >
+                    Uninstall
+                  </Button>
+                </div>
+              </div>
+              {parakeetModel?.status.state === "downloading" && (
+                <div className="mt-3 h-2 w-full overflow-hidden rounded-vibe border border-border bg-surface">
+                  <div
+                    className="h-full bg-info"
+                    style={{
+                      width: `${Math.min(100, Math.max(0, Math.round((parakeetModel.status.progress ?? 0) * 100)))}%`,
+                    }}
+                  />
+                </div>
+              )}
+              {parakeetModel?.status.state === "error" && (
+                <div className="mt-3 rounded-vibe border border-bad/35 bg-bad/10 p-3 text-xs text-muted">
+                  {parakeetModel.status.message}
+                </div>
+              )}
+            </div>
+          </Card>
+        )}
+
+        {draft.asrFamily === "whisper" && (
+          <Card className="p-4">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <div className="text-sm font-semibold text-fg">Whisper setup</div>
+                <div className="mt-1 text-xs text-muted">Backend first, then size + variant.</div>
+              </div>
+              <div className="text-right text-xs text-muted">
+                Active asset:{" "}
+                <span className="font-mono text-fg">{activeAsrAssetName || "—"}</span>
+              </div>
+            </div>
+
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-vibe border border-border bg-surface2 p-3">
+              <div className="text-xs font-medium uppercase tracking-wide text-muted">Backend</div>
+              <div className="inline-flex rounded-vibe border border-border bg-surface p-1">
+                {([
+                  { value: "ct2" as const, label: "CT2" },
+                  { value: "onnx" as const, label: "ONNX" },
+                ] as const).map((tab) => {
+                  const active = draft.whisperBackend === tab.value;
+                  return (
+                    <button
+                      key={tab.value}
+                      type="button"
+                      className={
+                        "rounded-vibe px-3 py-1.5 text-xs font-semibold transition-colors " +
+                        (active
+                          ? "bg-surface text-fg"
+                          : "bg-transparent text-muted hover:text-fg")
+                      }
+                      onClick={() => {
+                        onChange("whisperBackend", tab.value as AppSettings["whisperBackend"]);
+                      }}
+                    >
+                      {tab.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="mt-4 grid gap-3">
+              {WHISPER_SIZES.map((size) => {
+                const chips: Array<{ label: string; variant: WhisperVariant; assetName: string; installed: boolean }> = [];
+
+                if (draft.whisperBackend === "ct2") {
+                  const multiVariant: WhisperVariant = {
+                    backend: "ct2",
+                    size: size.id,
+                    language: "multi",
+                    precision: "int8",
+                  };
+                  const multiAsset = whisperVariantAssetName(multiVariant);
+                  const multiRecord = models.find((m) => m.name === multiAsset);
+                  chips.push({
+                    label: "Multi",
+                    variant: multiVariant,
+                    assetName: multiAsset,
+                    installed: multiRecord?.status.state === "installed",
+                  });
+
+                  if (size.hasEnglish) {
+                    const enVariant: WhisperVariant = {
+                      backend: "ct2",
+                      size: size.id,
+                      language: "en",
+                      precision: "int8",
+                    };
+                    const enAsset = whisperVariantAssetName(enVariant);
+                    const enRecord = models.find((m) => m.name === enAsset);
+                    chips.push({
+                      label: "EN",
+                      variant: enVariant,
+                      assetName: enAsset,
+                      installed: enRecord?.status.state === "installed",
+                    });
+                  }
+                } else {
+                  for (const precision of ["int8", "float"] as const) {
+                    const multiVariant: WhisperVariant = {
+                      backend: "onnx",
+                      size: size.id,
+                      language: "multi",
+                      precision,
+                    };
+                    const multiAsset = whisperVariantAssetName(multiVariant);
+                    const multiRecord = models.find((m) => m.name === multiAsset);
+                    chips.push({
+                      label: `Multi ${precision.toUpperCase()}`,
+                      variant: multiVariant,
+                      assetName: multiAsset,
+                      installed: multiRecord?.status.state === "installed",
+                    });
+
+                    if (size.hasEnglish) {
+                      const enVariant: WhisperVariant = {
+                        backend: "onnx",
+                        size: size.id,
+                        language: "en",
+                        precision,
+                      };
+                      const enAsset = whisperVariantAssetName(enVariant);
+                      const enRecord = models.find((m) => m.name === enAsset);
+                      chips.push({
+                        label: `EN ${precision.toUpperCase()}`,
+                        variant: enVariant,
+                        assetName: enAsset,
+                        installed: enRecord?.status.state === "installed",
+                      });
+                    }
+                  }
+                }
+
+                return (
+                  <div
+                    key={`${draft.whisperBackend}-${size.id}`}
+                    className="rounded-vibe border border-border bg-surface2 p-3"
+                  >
+                    <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                      <div className="min-w-0">
+                        <div className="text-sm font-semibold text-fg">{size.label}</div>
+                        <div className="mt-0.5 text-xs text-muted">{size.description}</div>
+                      </div>
+                      <div className="flex flex-wrap items-center justify-end gap-2">
+                        {chips.map((chip) => {
+                          const selected = chip.assetName === selectedWhisperAssetName;
+                          return (
+                            <button
+                              key={chip.assetName}
+                              type="button"
+                              className={
+                                "rounded-vibe border px-2.5 py-1 text-xs font-semibold transition-colors " +
+                                (selected
+                                  ? "border-accent/55 bg-accent/10 text-fg"
+                                  : "border-border bg-surface text-muted hover:text-fg")
+                              }
+                              title={chip.installed ? "Installed" : "Not installed"}
+                              onClick={() => selectWhisperVariant(chip.variant, chip.installed)}
+                            >
+                              {chip.label}
+                              {chip.installed && <span className="ml-1 text-good">•</span>}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="mt-4 rounded-vibe border border-border bg-surface2 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="text-xs font-medium uppercase tracking-wide text-muted">Selected</div>
+                  <div className="mt-1 truncate font-mono text-xs text-fg">{selectedWhisperAssetName}</div>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge
+                    tone={
+                      selectedWhisperRecord?.status.state === "installed"
+                        ? "good"
+                        : selectedWhisperRecord?.status.state === "downloading"
+                          ? "info"
+                          : selectedWhisperRecord?.status.state === "error"
+                            ? "bad"
+                            : "neutral"
+                    }
+                  >
+                    {statusLabel(selectedWhisperRecord?.status ?? { state: "notInstalled" })}
+                  </Badge>
+
+                  <Button
+                    variant={selectedWhisperRecord?.status.state === "installed" ? "secondary" : "primary"}
+                    size="sm"
+                    disabled={!selectedWhisperRecord || selectedWhisperRecord.status.state === "downloading"}
+                    onClick={() => {
+                      if (!selectedWhisperRecord) return;
+                      if (selectedWhisperRecord.status.state === "installed") {
+                        void onApplyImmediate(whisperVariantToSettings(guidedVariant));
+                        return;
+                      }
+                      onInstallAsset(selectedWhisperAssetName);
+                      setPendingAutoActivate(selectedWhisperAssetName);
+                    }}
+                    title={!selectedWhisperRecord ? "Unavailable in model manifest" : undefined}
+                  >
+                    {!selectedWhisperRecord
+                      ? "Unavailable"
+                      : selectedWhisperRecord.status.state === "installed"
+                        ? "Use"
+                        : selectedWhisperRecord.status.state === "downloading"
+                          ? "Downloading…"
+                          : "Download"}
+                  </Button>
+
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={!selectedWhisperRecord || selectedWhisperRecord.status.state !== "installed"}
+                    onClick={() => {
+                      const isActive = activeAsrAssetName === selectedWhisperAssetName;
+                      if (!confirmUninstall(selectedWhisperAssetName, isActive)) return;
+                      onUninstallAsset(selectedWhisperAssetName);
+                    }}
+                  >
+                    Uninstall
+                  </Button>
+                </div>
+              </div>
+
+              {selectedWhisperRecord?.status.state === "error" && (
+                <div className="mt-3 rounded-vibe border border-bad/35 bg-bad/10 p-3 text-xs text-muted">
+                  {selectedWhisperRecord.status.message}
+                </div>
+              )}
+            </div>
+          </Card>
+        )}
+
+        <Card className="p-4">
+          <div className="text-sm font-semibold text-fg">Installed models</div>
+          <div className="mt-1 text-xs text-muted">Switch engines instantly; uninstall removes files.</div>
+
+          {installedAsrAssets.length === 0 ? (
+            <div className="mt-3 rounded-vibe border border-border bg-surface2 p-3 text-xs text-muted">
+              No ASR models installed yet.
+            </div>
+          ) : (
+            <div className="mt-3 grid gap-2">
+              {installedAsrAssets.map((asset) => {
+                const isActive = asset.name === activeAsrAssetName;
+                const whisper = parseWhisperAssetName(asset.name);
+                const title =
+                  asset.kind === "parakeet"
+                    ? "Parakeet ASR"
+                    : `Whisper ${whisper?.backend.toUpperCase() ?? ""}`;
+                const detail =
+                  asset.kind === "parakeet"
+                    ? "Fast, low latency"
+                    : whisper
+                      ? `${whisper.size}${whisper.language === "en" ? " / en" : ""}${whisper.backend === "onnx" ? ` / ${whisper.precision}` : ""}`
+                      : asset.name;
+
+                return (
+                  <div
+                    key={asset.name}
+                    className="flex flex-col gap-2 rounded-vibe border border-border bg-surface2 p-3 md:flex-row md:items-center md:justify-between"
+                  >
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <div className="truncate text-sm font-semibold text-fg">{title}</div>
+                        {isActive && (
+                          <Badge tone="info" className="bg-info/10">
+                            Active
+                          </Badge>
+                        )}
+                      </div>
+                      <div className="mt-0.5 text-xs text-muted">{detail}</div>
+                    </div>
+                    <div className="flex flex-wrap items-center justify-end gap-2">
+                      <Button
+                        variant={isActive ? "secondary" : "primary"}
+                        size="sm"
+                        disabled={isActive}
+                        onClick={() => {
+                          if (asset.kind === "parakeet") {
+                            onChange("asrFamily", "parakeet");
+                            void onApplyImmediate({ asrFamily: "parakeet" });
+                            return;
+                          }
+                          if (whisper) {
+                            selectWhisperVariant(whisper, true);
+                          }
+                        }}
+                      >
+                        {isActive ? "Using" : "Use"}
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => {
+                          if (!confirmUninstall(asset.name, isActive)) return;
+                          onUninstallAsset(asset.name);
+                        }}
+                      >
+                        Uninstall
+                      </Button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </Card>
+
+        <Disclosure title="Advanced" description="Output & language preferences.">
+          <div className="grid gap-3">
+            <label className="flex items-center justify-between gap-3">
+              <span>Language</span>
+              <Select
+                width="md"
+                value={draft.language}
+                onChange={(v) => onChange("language", v)}
+                options={[
+                  { value: "auto", label: "Auto Detect" },
+                  { value: "en", label: "English" },
+                  { value: "es", label: "Spanish" },
+                  { value: "de", label: "German" },
+                  { value: "fr", label: "French" },
+                ]}
+              />
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={draft.autoDetectLanguage}
+                onChange={(event) => onChange("autoDetectLanguage", event.target.checked)}
+                disabled={draft.asrFamily === "whisper" && draft.whisperModelLanguage === "en"}
+              />
+              Enable automatic language detection (when supported)
+            </label>
+            <label className="flex items-center justify-between gap-3">
+              <span>Paste Shortcut</span>
+              <Select
+                width="md"
+                value={draft.pasteShortcut}
+                onChange={(v) => onChange("pasteShortcut", v as AppSettings["pasteShortcut"])}
+                options={[
+                  { value: "ctrl-shift-v", label: "Ctrl+Shift+V", description: "Terminal friendly" },
+                  { value: "ctrl-v", label: "Ctrl+V" },
+                ]}
+              />
+            </label>
+          </div>
+        </Disclosure>
       </div>
     </div>
   );
@@ -279,192 +1078,203 @@ const SettingsPanel = () => {
 
 const GeneralSection = ({
   draft,
+  audioDevices,
   onChange,
+  onRefreshDevices,
 }: {
   draft: AppSettings;
+  audioDevices: AudioDevice[];
   onChange: <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => void;
+  onRefreshDevices: () => Promise<void>;
 }) => {
-  const pushPreset = recommendedKeyOrCustom(draft.pushToTalkHotkey);
-  const togglePreset = recommendedKeyOrCustom(draft.toggleToTalkHotkey);
+  type HotkeyMode = AppSettings["hotkeyMode"];
+  const activeMode: HotkeyMode = draft.hotkeyMode;
+  const hotkeyKey: keyof Pick<AppSettings, "pushToTalkHotkey" | "toggleToTalkHotkey"> =
+    activeMode === "hold" ? "pushToTalkHotkey" : "toggleToTalkHotkey";
+  const hotkeyValue = draft[hotkeyKey];
+  const presetValue = isPresetSingleKey(hotkeyValue) ? hotkeyValue : "__combo__";
+  const isCombo = presetValue === "__combo__";
 
-  const [lastCustomPushHotkey, setLastCustomPushHotkey] = useState(
-    pushPreset === "__custom__" ? draft.pushToTalkHotkey : DEFAULT_PUSH_TO_TALK_HOTKEY,
-  );
-  const [lastCustomToggleHotkey, setLastCustomToggleHotkey] = useState(
-    togglePreset === "__custom__" ? draft.toggleToTalkHotkey : DEFAULT_TOGGLE_TO_TALK_HOTKEY,
-  );
+  const presetOptions = [
+    ...(isCombo
+      ? ([
+          {
+            value: "__combo__",
+            label: "Using recorded combo",
+            description: hotkeyValue,
+            disabled: true,
+          },
+        ] as const)
+      : []),
+    { value: "RightAlt", label: "Right Alt", description: "Recommended" },
+    { value: "RightCtrl", label: "Right Ctrl" },
+    { value: "ScrollLock", label: "Scroll Lock" },
+    { value: "Pause", label: "Pause / Break" },
+  ] as const;
 
-  useEffect(() => {
-    if (pushPreset === "__custom__") {
-      setLastCustomPushHotkey(draft.pushToTalkHotkey);
-    }
-  }, [pushPreset, draft.pushToTalkHotkey]);
+  const activeDefault =
+    activeMode === "hold" ? DEFAULT_PUSH_TO_TALK_HOTKEY : DEFAULT_TOGGLE_TO_TALK_HOTKEY;
 
-  useEffect(() => {
-    if (togglePreset === "__custom__") {
-      setLastCustomToggleHotkey(draft.toggleToTalkHotkey);
-    }
-  }, [togglePreset, draft.toggleToTalkHotkey]);
+  const audioValue = (draft.audioDeviceId ?? "__default__") as "__default__" | string;
+  const audioOptions = [
+    { value: "__default__" as const, label: "System Default" },
+    ...audioDevices.map((d) => ({
+      value: d.id,
+      label: d.name + (d.isDefault ? " (Default)" : ""),
+    })),
+  ];
 
   return (
-    <section>
-      <h3 className="text-lg font-medium text-white">General</h3>
-      <div className="mt-3 grid gap-3">
-        <label className="flex items-center justify-between gap-3">
-          <span>Hotkey Mode</span>
-          <select
-            className="rounded-md bg-slate-900 px-3 py-2"
-            value={draft.hotkeyMode}
-            onChange={(event) =>
-              onChange("hotkeyMode", event.target.value as AppSettings["hotkeyMode"])
-            }
+    <div className="grid gap-5">
+      <div className="grid gap-3">
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="text-sm font-semibold text-fg">Audio</div>
+            <div className="mt-0.5 text-xs text-muted">Choose input device and VAD sensitivity.</div>
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              void onRefreshDevices();
+            }}
           >
-            <option value="hold">Hold to Talk</option>
-            <option value="toggle">Toggle to Talk</option>
-          </select>
+            Refresh Devices
+          </Button>
+        </div>
+
+        <label className="flex items-center justify-between gap-3">
+          <span>Input Device</span>
+          <Select
+            width="md"
+            value={audioValue}
+            onChange={(v) => onChange("audioDeviceId", v === "__default__" ? null : v)}
+            options={audioOptions}
+          />
         </label>
 
-        <div className="flex items-start justify-between gap-3">
-          <div className="flex flex-col">
-            <span>Push to Talk Hotkey</span>
-            <span className="text-xs text-slate-400">
-              Press and hold to record (when mode is "Hold to Talk")
-            </span>
-          </div>
-          <div className="flex flex-col items-end gap-2">
-            <select
-              className="rounded-md bg-slate-900 px-3 py-2"
-              value={pushPreset}
-              onChange={(event) => {
-                const value = event.target.value;
-                if (value === "__custom__") {
-                  onChange("pushToTalkHotkey", lastCustomPushHotkey);
-                  return;
-                }
-                onChange("pushToTalkHotkey", value);
-              }}
-            >
-              <option value="RightAlt">Right Alt (recommended)</option>
-              <option value="RightCtrl">Right Ctrl</option>
-              <option value="ScrollLock">Scroll Lock</option>
-              <option value="Pause">Pause/Break</option>
-              <option value="F13">F13</option>
-              <option value="F14">F14</option>
-              <option value="F15">F15</option>
-              <option value="F16">F16</option>
-              <option value="F17">F17</option>
-              <option value="F18">F18</option>
-              <option value="F19">F19</option>
-              <option value="F20">F20</option>
-              <option value="F21">F21</option>
-              <option value="F22">F22</option>
-              <option value="F23">F23</option>
-              <option value="F24">F24</option>
-              <option value="__custom__">Custom combination…</option>
-            </select>
-            {pushPreset === "__custom__" && (
-              <HotkeyInput
-                value={draft.pushToTalkHotkey}
-                onChange={(hotkey) => {
-                  setLastCustomPushHotkey(hotkey);
-                  onChange("pushToTalkHotkey", hotkey);
-                }}
-              />
-            )}
-            <div className="flex items-center gap-2">
-              {draft.pushToTalkHotkey !== DEFAULT_PUSH_TO_TALK_HOTKEY && (
-                <button
-                  type="button"
-                  className="rounded bg-white/10 px-2 py-1 text-xs text-slate-300 hover:bg-white/20"
-                  onClick={() => onChange("pushToTalkHotkey", DEFAULT_PUSH_TO_TALK_HOTKEY)}
-                  title="Reset to default"
-                >
-                  Reset
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
-
-        <div className="flex items-start justify-between gap-3">
-          <div className="flex flex-col">
-            <span>Toggle to Talk Hotkey</span>
-            <span className="text-xs text-slate-400">
-              Press once to start, again to stop (when mode is "Toggle to Talk")
-            </span>
-          </div>
-          <div className="flex flex-col items-end gap-2">
-            <select
-              className="rounded-md bg-slate-900 px-3 py-2"
-              value={togglePreset}
-              onChange={(event) => {
-                const value = event.target.value;
-                if (value === "__custom__") {
-                  onChange("toggleToTalkHotkey", lastCustomToggleHotkey);
-                  return;
-                }
-                onChange("toggleToTalkHotkey", value);
-              }}
-            >
-              <option value="RightAlt">Right Alt</option>
-              <option value="RightCtrl">Right Ctrl</option>
-              <option value="ScrollLock">Scroll Lock</option>
-              <option value="Pause">Pause/Break</option>
-              <option value="F13">F13</option>
-              <option value="F14">F14</option>
-              <option value="F15">F15</option>
-              <option value="F16">F16</option>
-              <option value="F17">F17</option>
-              <option value="F18">F18</option>
-              <option value="F19">F19</option>
-              <option value="F20">F20</option>
-              <option value="F21">F21</option>
-              <option value="F22">F22</option>
-              <option value="F23">F23</option>
-              <option value="F24">F24</option>
-              <option value="__custom__">Custom combination…</option>
-            </select>
-            {togglePreset === "__custom__" && (
-              <HotkeyInput
-                value={draft.toggleToTalkHotkey}
-                onChange={(hotkey) => {
-                  setLastCustomToggleHotkey(hotkey);
-                  onChange("toggleToTalkHotkey", hotkey);
-                }}
-              />
-            )}
-            <div className="flex items-center gap-2">
-              {draft.toggleToTalkHotkey !== DEFAULT_TOGGLE_TO_TALK_HOTKEY && (
-                <button
-                  type="button"
-                  className="rounded bg-white/10 px-2 py-1 text-xs text-slate-300 hover:bg-white/20"
-                  onClick={() => onChange("toggleToTalkHotkey", DEFAULT_TOGGLE_TO_TALK_HOTKEY)}
-                  title="Reset to default"
-                >
-                  Reset
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
-
         <label className="flex items-center justify-between gap-3">
-          <span>HUD Theme</span>
-          <select
-            className="rounded-md bg-slate-900 px-3 py-2"
-            value={draft.hudTheme}
-            onChange={(event) =>
-              onChange("hudTheme", event.target.value as AppSettings["hudTheme"])
-            }
-          >
-            <option value="system">System</option>
-            <option value="dark">Dark</option>
-            <option value="light">Light</option>
-            <option value="high-contrast">High Contrast</option>
-          </select>
+          <span>VAD Sensitivity</span>
+          <Select
+            width="md"
+            value={draft.vadSensitivity}
+            onChange={(v) => onChange("vadSensitivity", v as AppSettings["vadSensitivity"])}
+            options={[
+              { value: "low", label: "Low" },
+              { value: "medium", label: "Medium" },
+              { value: "high", label: "High" },
+            ]}
+          />
         </label>
       </div>
-    </section>
+
+      <div className="grid gap-3">
+        <div>
+          <div className="text-sm font-semibold text-fg">Autoclean</div>
+          <div className="mt-0.5 text-xs text-muted">Post-process transcription text locally.</div>
+        </div>
+        <label className="flex items-center justify-between gap-3">
+          <span>Mode</span>
+          <Select
+            width="md"
+            value={draft.autocleanMode}
+            onChange={(v) => onChange("autocleanMode", v as AppSettings["autocleanMode"])}
+            options={[
+              { value: "off", label: "Off" },
+              { value: "fast", label: "Fast (Tier-1)" },
+            ]}
+          />
+        </label>
+      </div>
+
+      <div className="grid gap-3">
+        <div>
+          <div className="text-sm font-semibold text-fg">Talk Mode + Hotkey</div>
+          <div className="mt-0.5 text-xs text-muted">
+            Push-to-Talk (hold) and Toggle-to-Talk are mutually exclusive.
+          </div>
+        </div>
+
+        <label className="flex items-center justify-between gap-3">
+          <span>Talk Mode</span>
+          <Select
+            width="md"
+            value={draft.hotkeyMode}
+            onChange={(v) => onChange("hotkeyMode", v as AppSettings["hotkeyMode"])}
+            options={[
+              { value: "hold", label: "Push-to-Talk (Hold)" },
+              { value: "toggle", label: "Toggle-to-Talk" },
+            ]}
+          />
+        </label>
+
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex flex-col">
+            <span>{activeMode === "hold" ? "Push-to-Talk Hotkey" : "Toggle-to-Talk Hotkey"}</span>
+            <span className="mt-0.5 text-xs text-muted">
+              {activeMode === "hold"
+                ? "Hold to record."
+                : "Press once to start, again to stop."}
+            </span>
+            {isCombo && (
+              <span className="mt-1 text-xs text-muted">
+                Recorded combo overrides the preset key.
+              </span>
+            )}
+          </div>
+
+          <div className="flex w-56 flex-col items-end gap-2">
+            <Select
+              width="full"
+              value={presetValue}
+              onChange={(v) => {
+                if (v === "__combo__") return;
+                onChange(hotkeyKey, v);
+              }}
+              options={presetOptions as unknown as Array<{ value: string; label: string; description?: string; disabled?: boolean }>}
+              ariaLabel="Hotkey preset"
+            />
+            <div className="w-full">
+              <div className="mb-1 text-xs font-medium uppercase tracking-wide text-muted">
+                Record
+              </div>
+              <HotkeyInput value={hotkeyValue} onChange={(hk) => onChange(hotkeyKey, hk)} />
+            </div>
+            {hotkeyValue !== activeDefault && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => onChange(hotkeyKey, activeDefault)}
+                title="Reset to default"
+              >
+                Reset
+              </Button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div className="grid gap-3">
+        <div>
+          <div className="text-sm font-semibold text-fg">Theme</div>
+          <div className="mt-0.5 text-xs text-muted">Defaults to System for new installs.</div>
+        </div>
+        <label className="flex items-center justify-between gap-3">
+          <span>App Theme</span>
+          <Select
+            width="md"
+            value={draft.hudTheme}
+            onChange={(v) => onChange("hudTheme", v as AppSettings["hudTheme"])}
+            options={[
+              { value: "system", label: "System" },
+              { value: "dark", label: "Dark" },
+              { value: "light", label: "Light" },
+              { value: "high-contrast", label: "High Contrast" },
+            ]}
+          />
+        </label>
+      </div>
+    </div>
   );
 };
 
@@ -496,70 +1306,64 @@ const LinuxSetupSection = ({
 
   return (
     <section>
-      <h3 className="text-lg font-medium text-white">Linux Setup</h3>
-      <div className="mt-3 space-y-3 rounded-xl border border-white/10 bg-white/5 p-4">
+      <h3 className="text-lg font-medium text-fg">Linux Setup</h3>
+      <Card className="mt-3 space-y-3 p-4">
         <div className="grid gap-2 text-sm">
           <div className="flex items-center justify-between">
-            <span className="text-slate-300">Wayland session</span>
+            <span className="text-muted">Wayland session</span>
             <span
-              className={
-                status.waylandSession ? "text-emerald-300" : "text-amber-300"
-              }
+              className={status.waylandSession ? "text-good" : "text-warn"}
             >
               {status.waylandSession ? "ready" : "not detected"}
             </span>
           </div>
           <div className="flex items-center justify-between">
-            <span className="text-slate-300">Runtime dir (XDG_RUNTIME_DIR)</span>
+            <span className="text-muted">Runtime dir (XDG_RUNTIME_DIR)</span>
             <span
               className={
                 status.xdgRuntimeDirAvailable
-                  ? "text-emerald-300"
-                  : "text-amber-300"
+                  ? "text-good"
+                  : "text-warn"
               }
             >
               {status.xdgRuntimeDirAvailable ? "ready" : "missing"}
             </span>
           </div>
           <div className="flex items-center justify-between">
-            <span className="text-slate-300">Global hotkeys (/dev/input)</span>
+            <span className="text-muted">Global hotkeys (/dev/input)</span>
             <span
-              className={
-                status.evdevReadable ? "text-emerald-300" : "text-amber-300"
-              }
+              className={status.evdevReadable ? "text-good" : "text-warn"}
             >
               {status.evdevReadable ? "ready" : "needs permission"}
             </span>
           </div>
           <div className="flex items-center justify-between">
-            <span className="text-slate-300">Paste injection (/dev/uinput)</span>
+            <span className="text-muted">Paste injection (/dev/uinput)</span>
             <span
-              className={
-                status.uinputWritable ? "text-emerald-300" : "text-amber-300"
-              }
+              className={status.uinputWritable ? "text-good" : "text-warn"}
             >
               {status.uinputWritable ? "ready" : "needs permission"}
             </span>
           </div>
           <div className="flex items-center justify-between">
-            <span className="text-slate-300">Clipboard tools (wl-clipboard)</span>
+            <span className="text-muted">Clipboard tools (wl-clipboard)</span>
             <span
               className={
                 status.wlCopyAvailable && status.wlPasteAvailable
-                  ? "text-emerald-300"
-                  : "text-amber-300"
+                  ? "text-good"
+                  : "text-warn"
               }
             >
               {status.wlCopyAvailable && status.wlPasteAvailable ? "ready" : "missing"}
             </span>
           </div>
           <div className="flex items-center justify-between">
-            <span className="text-slate-300">One-click setup (polkit + acl)</span>
+            <span className="text-muted">One-click setup (polkit + acl)</span>
             <span
               className={
                 status.pkexecAvailable && status.setfaclAvailable
-                  ? "text-emerald-300"
-                  : "text-amber-300"
+                  ? "text-good"
+                  : "text-warn"
               }
             >
               {status.pkexecAvailable && status.setfaclAvailable ? "ready" : "missing"}
@@ -568,22 +1372,22 @@ const LinuxSetupSection = ({
         </div>
 
         {status.waylandSession && (
-          <label className="flex items-center justify-between gap-3 rounded-lg bg-black/30 p-3 text-sm">
-            <span className="text-slate-300">Show HUD overlay on Wayland</span>
+          <label className="flex items-center justify-between gap-3 rounded-vibe border border-border bg-surface2 p-3 text-sm">
+            <span className="text-muted">Show HUD overlay on Wayland</span>
             <div className="flex items-center gap-2">
               <input
                 type="checkbox"
                 checked={showOverlayOnWayland}
                 onChange={(event) => onChangeShowOverlayOnWayland(event.target.checked)}
               />
-              <span className="text-xs text-slate-400">may steal focus</span>
+              <span className="text-xs text-muted">may steal focus</span>
             </div>
           </label>
         )}
 
         {status.details.length > 0 && (
-          <div className="rounded-lg bg-black/30 p-3 text-xs text-slate-300">
-            <div className="font-semibold text-slate-200">Notes</div>
+          <div className="rounded-vibe border border-border bg-surface2 p-3 text-xs text-muted">
+            <div className="font-semibold text-fg">Notes</div>
             <ul className="mt-2 list-disc space-y-1 pl-5">
               {status.details.map((line, idx) => (
                 <li key={idx}>{line}</li>
@@ -593,24 +1397,22 @@ const LinuxSetupSection = ({
         )}
 
         {message && (
-          <div className="rounded-lg border border-cyan-500/20 bg-cyan-500/10 p-3 text-xs text-cyan-200">
+          <div className="rounded-vibe border border-info/30 bg-info/10 p-3 text-xs text-fg">
             {message}
           </div>
         )}
 
         <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            className="rounded-md bg-white/10 px-3 py-2 text-sm text-slate-200 hover:bg-white/20"
+          <Button
+            variant="secondary"
             onClick={() => {
               void onRefresh();
             }}
           >
             Refresh
-          </button>
-          <button
-            type="button"
-            className="rounded-md bg-cyan-600 px-3 py-2 text-sm font-semibold text-white hover:bg-cyan-500 disabled:opacity-50"
+          </Button>
+          <Button
+            variant="primary"
             onClick={() => {
               void onEnable();
             }}
@@ -631,276 +1433,34 @@ const LinuxSetupSection = ({
             }
           >
             {busy ? "Applying…" : permissionsConfigured ? "Configured" : "Enable (admin)"}
-          </button>
+          </Button>
           {!status.pkexecAvailable && (
-            <span className="self-center text-xs text-amber-200">
+            <span className="self-center text-xs text-warn">
               Install polkit to enable one-click setup.
             </span>
           )}
           {status.pkexecAvailable && !status.setfaclAvailable && (
-            <span className="self-center text-xs text-amber-200">
+            <span className="self-center text-xs text-warn">
               Install acl (setfacl) to enable one-click setup.
             </span>
           )}
         </div>
 
         {!permissionsConfigured && (
-          <p className="text-xs text-slate-400">
+          <p className="text-xs text-muted">
             After enabling, log out and back in so group membership takes effect.
           </p>
         )}
 
         {!pasteReady && (
-          <p className="text-xs text-slate-400">
+          <p className="text-xs text-muted">
             Paste to active app requires Wayland, wl-clipboard, and /dev/uinput access.
           </p>
         )}
-      </div>
+      </Card>
     </section>
   );
 };
-
-const SpeechSection = ({
-  draft,
-  onChange,
-}: {
-  draft: AppSettings;
-  onChange: <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => void;
-}) => (
-  <section>
-    <h3 className="text-lg font-medium text-white">Speech</h3>
-    <div className="mt-3 grid gap-3">
-      <label className="flex items-center justify-between gap-3">
-        <span>Model Family</span>
-        <select
-          className="rounded-md bg-slate-900 px-3 py-2"
-          value={draft.asrFamily}
-          onChange={(event) =>
-            onChange("asrFamily", event.target.value as AppSettings["asrFamily"])
-          }
-        >
-          <option value="parakeet">Parakeet (fast default)</option>
-          <option value="whisper">Whisper (accuracy-first)</option>
-        </select>
-      </label>
-
-      {draft.asrFamily === "whisper" && (
-        <label className="flex items-center justify-between gap-3">
-          <span>Whisper Backend</span>
-          <select
-            className="rounded-md bg-slate-900 px-3 py-2"
-            value={draft.whisperBackend}
-            onChange={(event) =>
-              onChange("whisperBackend", event.target.value as AppSettings["whisperBackend"])
-            }
-          >
-            <option value="ct2">Fast CPU (CT2)</option>
-            <option value="onnx">Accelerated (ONNX)</option>
-          </select>
-        </label>
-      )}
-
-      {draft.asrFamily === "whisper" && (
-        <label className="flex items-center justify-between gap-3">
-          <span>Whisper Model</span>
-          <select
-            className="rounded-md bg-slate-900 px-3 py-2"
-            value={draft.whisperModel}
-            onChange={(event) =>
-              onChange("whisperModel", event.target.value as AppSettings["whisperModel"])
-            }
-          >
-            {WHISPER_SIZES.map((size) => (
-              <option key={size.id} value={size.id}>
-                {size.label}
-              </option>
-            ))}
-          </select>
-        </label>
-      )}
-
-      {draft.asrFamily === "whisper" && (
-        <label className="flex items-center justify-between gap-3">
-          <span>Whisper Language</span>
-          <select
-            className="rounded-md bg-slate-900 px-3 py-2"
-            value={
-              draft.whisperModel === "large-v3" || draft.whisperModel === "large-v3-turbo"
-                ? "multi"
-                : draft.whisperModelLanguage
-            }
-            onChange={(event) =>
-              onChange(
-                "whisperModelLanguage",
-                event.target.value as AppSettings["whisperModelLanguage"],
-              )
-            }
-            disabled={
-              draft.whisperModel === "large-v3" || draft.whisperModel === "large-v3-turbo"
-            }
-          >
-            <option value="multi">Multilingual</option>
-            <option value="en">English Only</option>
-          </select>
-        </label>
-      )}
-
-      {draft.asrFamily === "whisper" && (
-        <label className="flex items-center justify-between gap-3">
-          <span>Whisper Precision</span>
-          <select
-            className="rounded-md bg-slate-900 px-3 py-2"
-            value={draft.whisperPrecision}
-            onChange={(event) =>
-              onChange("whisperPrecision", event.target.value as AppSettings["whisperPrecision"])
-            }
-          >
-            <option value="int8">INT8 (fast)</option>
-            <option value="float">Float (higher accuracy)</option>
-          </select>
-        </label>
-      )}
-      <label className="flex items-center justify-between gap-3">
-        <span>Language</span>
-        <select
-          className="rounded-md bg-slate-900 px-3 py-2"
-          value={draft.language}
-          onChange={(event) => onChange("language", event.target.value)}
-        >
-          <option value="auto">Auto Detect</option>
-          <option value="en">English</option>
-          <option value="es">Spanish</option>
-          <option value="de">German</option>
-          <option value="fr">French</option>
-        </select>
-      </label>
-      <label className="flex items-center gap-2 text-sm">
-        <input
-          type="checkbox"
-          checked={draft.autoDetectLanguage}
-          onChange={(event) => onChange("autoDetectLanguage", event.target.checked)}
-          disabled={
-            draft.asrFamily === "whisper" && draft.whisperModelLanguage === "en"
-          }
-        />
-        Enable automatic language detection (when supported)
-      </label>
-      <label className="flex items-center justify-between gap-3">
-        <span>Paste Shortcut</span>
-        <select
-          className="rounded-md bg-slate-900 px-3 py-2"
-          value={draft.pasteShortcut}
-          onChange={(event) =>
-            onChange("pasteShortcut", event.target.value as AppSettings["pasteShortcut"])
-          }
-        >
-          <option value="ctrl-shift-v">Ctrl+Shift+V (terminal friendly)</option>
-          <option value="ctrl-v">Ctrl+V</option>
-        </select>
-      </label>
-    </div>
-  </section>
-);
-
-const AudioSection = ({
-  draft,
-  audioDevices,
-  onChange,
-  onRefresh,
-}: {
-  draft: AppSettings;
-  audioDevices: AudioDevice[];
-  onChange: <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => void;
-  onRefresh: () => Promise<void>;
-}) => (
-  <section>
-    <div className="flex items-center justify-between">
-      <h3 className="text-lg font-medium text-white">Audio</h3>
-      <button
-        type="button"
-        className="rounded bg-white/10 px-2 py-1 text-xs uppercase text-white hover:bg-white/20"
-        onClick={() => {
-          void onRefresh();
-        }}
-      >
-        Refresh Devices
-      </button>
-    </div>
-    <div className="mt-3 grid gap-3">
-      <label className="flex items-center justify-between gap-3">
-        <span>Input Device</span>
-        <select
-          className="w-56 rounded-md bg-slate-900 px-3 py-2"
-          value={draft.audioDeviceId ?? ""}
-          onChange={(event) =>
-            onChange(
-              "audioDeviceId",
-              event.target.value === "" ? null : event.target.value,
-            )
-          }
-        >
-          <option value="">System Default</option>
-          {audioDevices.map((device) => (
-            <option key={device.id} value={device.id}>
-              {device.name}
-              {device.isDefault ? " (Default)" : ""}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="flex items-center justify-between gap-3">
-        <span>VAD Sensitivity</span>
-        <select
-          className="w-56 rounded-md bg-slate-900 px-3 py-2"
-          value={draft.vadSensitivity}
-          onChange={(event) =>
-            onChange(
-              "vadSensitivity",
-              event.target.value as AppSettings["vadSensitivity"],
-            )
-          }
-        >
-          <option value="low">Low</option>
-          <option value="medium">Medium</option>
-          <option value="high">High</option>
-        </select>
-      </label>
-      <p className="text-xs text-slate-400">
-        Audio processing uses the WebRTC APM chain automatically.
-      </p>
-    </div>
-  </section>
-);
-
-const AutocleanSection = ({
-  draft,
-  onChange,
-}: {
-  draft: AppSettings;
-  onChange: <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => void;
-}) => (
-  <section>
-    <h3 className="text-lg font-medium text-white">Autoclean</h3>
-    <div className="mt-3 grid gap-3">
-      <label className="flex items-center justify-between gap-3">
-        <span>Mode</span>
-        <select
-          className="rounded-md bg-slate-900 px-3 py-2"
-          value={draft.autocleanMode}
-          onChange={(event) =>
-            onChange(
-              "autocleanMode",
-              event.target.value as AppSettings["autocleanMode"],
-            )
-          }
-        >
-          <option value="off">Off</option>
-          <option value="fast">Fast (Tier-1)</option>
-        </select>
-      </label>
-    </div>
-  </section>
-);
 
 const ModelSection = ({
   models,
@@ -944,12 +1504,15 @@ const ModelSection = ({
       key: string,
       update: Partial<{ language: WhisperLanguage; precision: WhisperPrecision }>,
     ) => {
+      const defaults = {
+        language: "multi" as WhisperLanguage,
+        precision: "int8" as WhisperPrecision,
+      };
       setDownloadSelections((prev) => ({
         ...prev,
         [key]: {
-          language: "multi",
-          precision: "int8",
-          ...prev[key],
+          ...defaults,
+          ...(prev[key] ?? {}),
           ...update,
         },
       }));
@@ -981,66 +1544,66 @@ const ModelSection = ({
         })}
 
         {openDownloadKey === key && (
-          <div className="rounded-lg border border-white/10 bg-slate-900/60 p-3 text-xs text-slate-200">
+          <div className="rounded-vibe border border-border bg-surface2 p-3 text-xs text-fg">
             <div className="grid gap-3 md:grid-cols-3">
               <div>
-                <div className="mb-1 text-xs uppercase text-slate-400">Language</div>
+                <div className="mb-1 text-xs uppercase text-muted">Language</div>
                 {size.hasEnglish ? (
-                  <select
-                    className="w-full rounded-md bg-slate-950 px-2 py-1"
+                  <Select
+                    width="full"
+                    size="sm"
                     value={selection.language}
-                    onChange={(event) =>
+                    onChange={(value) =>
                       updateSelection(key, {
-                        language: event.target.value as WhisperLanguage,
+                        language: value as WhisperLanguage,
                       })
                     }
-                  >
-                    <option value="multi">Multilingual</option>
-                    <option value="en">English Only</option>
-                  </select>
+                    options={[
+                      { value: "multi", label: "Multilingual" },
+                      { value: "en", label: "English Only" },
+                    ]}
+                  />
                 ) : (
-                  <div className="rounded-md bg-slate-950 px-2 py-1 text-slate-400">
+                  <div className="rounded-vibe border border-border bg-surface px-2 py-1 text-muted">
                     Multilingual only
                   </div>
                 )}
               </div>
               <div>
-                <div className="mb-1 text-xs uppercase text-slate-400">Precision</div>
-                <select
-                  className="w-full rounded-md bg-slate-950 px-2 py-1"
+                <div className="mb-1 text-xs uppercase text-muted">Precision</div>
+                <Select
+                  width="full"
+                  size="sm"
                   value={selection.precision}
-                  onChange={(event) =>
+                  onChange={(value) =>
                     updateSelection(key, {
-                      precision: event.target.value as WhisperPrecision,
+                      precision: value as WhisperPrecision,
                     })
                   }
-                >
-                  <option value="int8">INT8 (fast)</option>
-                  <option value="float">Float (higher accuracy)</option>
-                </select>
+                  options={[
+                    { value: "int8", label: "INT8 (fast)" },
+                    { value: "float", label: "Float (higher accuracy)" },
+                  ]}
+                />
               </div>
               <div className="flex flex-col justify-end gap-2">
-                <button
-                  type="button"
-                  className="rounded-md bg-cyan-600 px-3 py-2 text-xs font-semibold text-white hover:bg-cyan-500"
+                <Button
+                  variant="primary"
+                  size="sm"
                   onClick={() => {
                     onInstallAsset(assetName);
                     setOpenDownloadKey(null);
                   }}
                 >
                   Download Selected
-                </button>
-                <button
-                  type="button"
-                  className="rounded-md bg-white/10 px-3 py-2 text-xs text-slate-200 hover:bg-white/20"
-                  onClick={() => setOpenDownloadKey(null)}
-                >
+                </Button>
+                <Button variant="secondary" size="sm" onClick={() => setOpenDownloadKey(null)}>
                   Cancel
-                </button>
+                </Button>
               </div>
             </div>
             {backend === "ct2" && (
-              <p className="mt-2 text-xs text-slate-400">
+              <p className="mt-2 text-xs text-muted">
                 CT2 precision affects runtime speed only and does not change the download size.
               </p>
             )}
@@ -1052,22 +1615,22 @@ const ModelSection = ({
 
   return (
     <section>
-      <h3 className="text-lg font-medium text-white">Models & Downloads</h3>
+      <h3 className="text-lg font-medium text-fg">Models & Downloads</h3>
       <div className="mt-3 space-y-4">
-        <div className="rounded-lg border border-white/10 bg-white/5 p-3">
+        <div className="rounded-vibe border border-border bg-surface2 p-3">
           <div className="flex items-center justify-between">
-            <h4 className="text-sm font-semibold text-white">Whisper (Fast CPU / CT2)</h4>
-            <span className="text-xs text-slate-400">Best on laptops</span>
+            <h4 className="text-sm font-semibold text-fg">Whisper (Fast CPU / CT2)</h4>
+            <span className="text-xs text-muted">Best on laptops</span>
           </div>
           <div className="mt-3 space-y-3">
             {WHISPER_SIZES.map((size) => renderWhisperRow("ct2", size))}
           </div>
         </div>
 
-        <div className="rounded-lg border border-white/10 bg-white/5 p-3">
+        <div className="rounded-vibe border border-border bg-surface2 p-3">
           <div className="flex items-center justify-between">
-            <h4 className="text-sm font-semibold text-white">Whisper (Accelerated / ONNX)</h4>
-            <span className="text-xs text-slate-400">Best with GPU/accelerators</span>
+            <h4 className="text-sm font-semibold text-fg">Whisper (Accelerated / ONNX)</h4>
+            <span className="text-xs text-muted">Best with GPU/accelerators</span>
           </div>
           <div className="mt-3 space-y-3">
             {WHISPER_SIZES.map((size) => renderWhisperRow("onnx", size))}
@@ -1093,17 +1656,13 @@ const ModelSection = ({
       </div>
 
       {(downloadLogs.length > 0 || isAnyDownloading) && (
-        <div className="mt-4 rounded-lg border border-white/10 bg-slate-900/50 p-4">
+        <div className="mt-4 rounded-vibe border border-border bg-surface2 p-4">
           <div className="flex items-center justify-between">
-            <h4 className="text-sm font-medium text-white">Download Activity</h4>
+            <h4 className="text-sm font-medium text-fg">Download Activity</h4>
             {downloadLogs.length > 0 && (
-              <button
-                type="button"
-                className="text-xs text-slate-400 hover:text-white"
-                onClick={onClearLogs}
-              >
+              <Button variant="ghost" size="sm" onClick={onClearLogs}>
                 Clear Log
-              </button>
+              </Button>
             )}
           </div>
           <div className="mt-2 max-h-32 space-y-1 overflow-y-auto">
@@ -1112,22 +1671,22 @@ const ModelSection = ({
                 key={log.id}
                 className={`flex items-start gap-2 text-xs ${
                   log.type === "error"
-                    ? "text-rose-400"
+                    ? "text-bad"
                     : log.type === "success"
-                      ? "text-emerald-400"
+                      ? "text-good"
                       : log.type === "progress"
-                        ? "text-cyan-400"
-                        : "text-slate-400"
+                        ? "text-info"
+                        : "text-muted"
                 }`}
               >
-                <span className="shrink-0 text-slate-500">
+                <span className="shrink-0 text-muted/70">
                   {new Date(log.timestamp).toLocaleTimeString()}
                 </span>
                 <span>{log.message}</span>
               </div>
             ))}
             {downloadLogs.length === 0 && isAnyDownloading && (
-              <div className="text-xs text-slate-400">
+              <div className="text-xs text-muted">
                 Waiting for download progress...
               </div>
             )}
@@ -1211,64 +1770,78 @@ function renderModelRow({
   }
 
   const sizeText = formatBytes(record?.sizeBytes ?? 0);
-  const checksumText = record?.checksum ? record.checksum.slice(0, 12) : "—";
   const isDownloading = status.state === "downloading";
 
   return (
     <div
-      className={`rounded-lg border p-4 transition-all ${
+      className={`rounded-vibe border p-4 transition-colors ${
         isDownloading
-          ? "border-cyan-500/50 bg-cyan-950/20"
+          ? "border-info/40 bg-info/10"
           : status.state === "error"
-            ? "border-rose-500/30 bg-rose-950/10"
-            : "border-white/10 bg-white/5"
+            ? "border-bad/35 bg-bad/10"
+            : "border-border bg-surface2"
       }`}
     >
       <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
         <div className="flex-1">
           <div className="flex items-center gap-2">
-            <p className="text-sm font-semibold text-white">{title}</p>
+            <p className="text-sm font-semibold text-fg">{title}</p>
             {isDefault && (
-              <span className="inline-flex items-center rounded-full bg-emerald-500/20 px-2 py-0.5 text-xs font-medium text-emerald-400">
+              <span className="inline-flex items-center rounded-vibe border border-good/35 bg-good/10 px-2 py-0.5 text-xs font-medium text-good">
                 Default
               </span>
             )}
             {isDownloading && (
-              <span className="inline-flex items-center gap-1 rounded-full bg-cyan-500/20 px-2 py-0.5 text-xs font-medium text-cyan-400">
-                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-cyan-400" />
+              <span className="inline-flex items-center gap-1 rounded-vibe border border-info/35 bg-info/10 px-2 py-0.5 text-xs font-medium text-info">
+                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-info" />
                 Downloading
               </span>
             )}
           </div>
-          <p className="text-xs text-slate-300">{description}</p>
-          <div className="mt-2 flex flex-wrap gap-3 text-xs text-slate-300">
+          <p className="text-xs text-muted">{description}</p>
+          <div className="mt-2 flex flex-wrap gap-3 text-xs text-muted">
             <span
-              className={`rounded px-2 py-1 ${
+              className={`rounded-vibe border border-border px-2 py-1 ${
                 status.state === "installed"
-                  ? "bg-emerald-500/20 text-emerald-400"
+                  ? "bg-good/10 text-good"
                   : status.state === "error"
-                    ? "bg-rose-500/20 text-rose-400"
+                    ? "bg-bad/10 text-bad"
                     : isDownloading
-                      ? "bg-cyan-500/20 text-cyan-400"
-                      : "bg-white/10"
+                      ? "bg-info/10 text-info"
+                      : "bg-surface"
               }`}
             >
               Status: <span className="font-medium">{statusLabel}</span>
             </span>
-            <span className="rounded bg-white/10 px-2 py-1">
-              Size: <span className="font-medium text-white">{sizeText}</span>
+            <span className="rounded-vibe border border-border bg-surface px-2 py-1">
+              Size: <span className="font-medium text-fg">{sizeText}</span>
             </span>
-            <span className="rounded bg-white/10 px-2 py-1">
-              Checksum: <span className="font-mono text-white">{checksumText}</span>
-            </span>
+          </div>
+
+          <div className="mt-3">
+            <Disclosure
+              title="Details"
+              description="Checksum and asset metadata."
+            >
+              <div className="grid gap-2 text-xs">
+                <div>
+                  <span className="text-muted">Version:</span>{" "}
+                  <span className="font-mono text-fg">{record?.version ?? "—"}</span>
+                </div>
+                <div>
+                  <span className="text-muted">Checksum:</span>{" "}
+                  <span className="font-mono text-fg">{record?.checksum ?? "—"}</span>
+                </div>
+              </div>
+            </Disclosure>
           </div>
 
           {/* Enhanced error message */}
           {statusDetail && (
-            <div className="mt-3 rounded-md border border-rose-500/30 bg-rose-950/30 p-3">
+            <div className="mt-3 rounded-vibe border border-bad/35 bg-bad/10 p-3">
               <div className="flex items-start gap-2">
                 <svg
-                  className="mt-0.5 h-4 w-4 shrink-0 text-rose-400"
+                  className="mt-0.5 h-4 w-4 shrink-0 text-bad"
                   fill="none"
                   viewBox="0 0 24 24"
                   stroke="currentColor"
@@ -1281,8 +1854,8 @@ function renderModelRow({
                   />
                 </svg>
                 <div>
-                  <p className="text-xs font-medium text-rose-400">Download failed</p>
-                  <p className="mt-1 text-xs text-rose-300/80">{statusDetail}</p>
+                  <p className="text-xs font-medium text-bad">Download failed</p>
+                  <p className="mt-1 text-xs text-muted">{statusDetail}</p>
                 </div>
               </div>
             </div>
@@ -1292,22 +1865,22 @@ function renderModelRow({
           {isDownloading && (
             <div className="mt-4 space-y-2">
               {/* Progress bar with glow effect */}
-              <div className="relative h-3 w-full overflow-hidden rounded-full bg-slate-800">
+              <div className="relative h-3 w-full overflow-hidden rounded-vibe border border-border bg-surface">
                 <div
-                  className="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-cyan-500 to-cyan-400 transition-all duration-300"
+                  className="absolute inset-y-0 left-0 bg-gradient-to-r from-accent to-accent2 transition-all duration-300"
                   style={{
                     width: `${Math.min(100, Math.max(0, progressValue * 100)).toFixed(1)}%`,
                   }}
                 />
                 <div
-                  className="absolute inset-y-0 left-0 rounded-full bg-gradient-to-r from-cyan-400/50 to-transparent blur-sm transition-all duration-300"
+                  className="absolute inset-y-0 left-0 bg-gradient-to-r from-accent2/40 to-transparent blur-sm transition-all duration-300"
                   style={{
                     width: `${Math.min(100, Math.max(0, progressValue * 100)).toFixed(1)}%`,
                   }}
                 />
                 {/* Shimmer animation */}
                 <div
-                  className="absolute inset-0 overflow-hidden rounded-full"
+                  className="absolute inset-0 overflow-hidden"
                   style={{
                     width: `${Math.min(100, Math.max(0, progressValue * 100)).toFixed(1)}%`,
                   }}
@@ -1318,43 +1891,37 @@ function renderModelRow({
 
               {/* Download stats */}
               <div className="flex items-center justify-between text-xs">
-                <div className="flex items-center gap-3 text-slate-400">
+                <div className="flex items-center gap-3 text-muted">
                   {downloadedBytes > 0 && totalBytes > 0 && (
                     <span>
                       {formatBytes(downloadedBytes)} / {formatBytes(totalBytes)}
                     </span>
                   )}
-                  {downloadSpeed && (
-                    <span className="text-cyan-400">{downloadSpeed}</span>
-                  )}
+                  {downloadSpeed && <span className="text-info">{downloadSpeed}</span>}
                 </div>
-                {eta && <span className="text-slate-400">{eta}</span>}
+                {eta && <span className="text-muted">{eta}</span>}
               </div>
             </div>
           )}
         </div>
         <div className="mt-3 flex-shrink-0 md:ml-4 md:mt-0">
           <div className="flex gap-2">
-            <button
-              type="button"
-              className={`rounded-md px-3 py-2 text-sm font-medium transition-all ${
-                installDisabled
-                  ? "cursor-not-allowed bg-white/10 text-slate-500"
-                  : "bg-cyan-500 text-slate-900 hover:bg-cyan-400"
-              }`}
+            <Button
+              variant={status.state === "installed" ? "secondary" : "primary"}
+              size="sm"
               onClick={onInstall}
               disabled={installDisabled}
             >
               {installLabel}
-            </button>
-            <button
-              type="button"
-              className="rounded-md border border-white/20 px-3 py-2 text-sm text-slate-200 hover:bg-white/10 disabled:cursor-not-allowed disabled:border-white/10 disabled:text-slate-500"
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
               onClick={onUninstall}
               disabled={uninstallDisabled}
             >
               Uninstall
-            </button>
+            </Button>
           </div>
         </div>
       </div>
@@ -1375,5 +1942,9 @@ function formatBytes(bytes: number): string {
   }
   return `${size.toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
 }
+
+// Keep legacy helper sections referenced to avoid unused warnings.
+void ModelSection;
+void renderModelRow;
 
 export default SettingsPanel;

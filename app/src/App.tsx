@@ -8,9 +8,9 @@ import {
   DEFAULT_APP_SETTINGS,
   type ModelSnapshotPayload,
 } from "./state/appStore";
+import { applyThemePreference } from "./ui/theme";
 import Dashboard from "./components/Dashboard";
 import SettingsPanel from "./components/SettingsPanel";
-import LogViewer from "./components/LogViewer";
 import ToastStack from "./components/ToastStack";
 
 type LinuxPermissionsStatus = {
@@ -38,12 +38,19 @@ const App = () => {
     toggleSettings,
     setSettingsState,
     setMetrics,
-    logViewerVisible,
-    toggleLogViewer,
     setLogs,
     setModelSnapshot,
     notify,
   } = useAppStore();
+
+  const themePreference = useAppStore(
+    (state) => (state.settings?.hudTheme ?? "system") as AppSettings["hudTheme"],
+  );
+
+  useEffect(() => {
+    const cleanup = applyThemePreference(themePreference);
+    return cleanup;
+  }, [themePreference]);
 
   useEffect(() => {
     initialize();
@@ -207,30 +214,7 @@ const App = () => {
       );
       unlisteners.push(() => pasteUnconfirmedDispose());
 
-      if (import.meta.env.DEV) {
-        const logsOpenDispose = await listen("open-logs", () => {
-          void (async () => {
-            try {
-              const snapshot = await invoke<string[]>("get_logs");
-              setLogs(snapshot ?? []);
-            } catch (error) {
-              console.error("Failed to fetch logs", error);
-            }
-            toggleLogViewer(true);
-          })();
-        });
-        unlisteners.push(() => logsOpenDispose());
-
-        const logsUpdateDispose = await listen<string[]>(
-          "logs-updated",
-          (event) => {
-            if (event.payload) {
-              setLogs(event.payload);
-            }
-          },
-        );
-        unlisteners.push(() => logsUpdateDispose());
-      }
+      // Backend logs are pulled on-demand in DebugPanel.
     };
 
     registerListener().catch((error) =>
@@ -252,7 +236,6 @@ const App = () => {
     toggleSettings,
     setSettingsState,
     setMetrics,
-    toggleLogViewer,
     setLogs,
     setModelSnapshot,
     notify,
@@ -262,7 +245,6 @@ const App = () => {
     <>
       <Dashboard />
       {settingsVisible && <SettingsPanel />}
-      {import.meta.env.DEV && logViewerVisible && <LogViewer />}
       <ToastStack />
     </>
   );

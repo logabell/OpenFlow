@@ -61,17 +61,17 @@ function keyboardEventToHotkey(event: KeyboardEvent): string | null {
     return null;
   }
 
+  // Ignore IME/dead key events
+  if (event.key === "Dead") {
+    return null;
+  }
+
   const parts: string[] = [];
 
   if (event.ctrlKey) parts.push("Ctrl");
   if (event.altKey) parts.push("Alt");
   if (event.shiftKey) parts.push("Shift");
   if (event.metaKey) parts.push("Meta");
-
-  // Require at least one modifier for a valid hotkey
-  if (parts.length === 0) {
-    return null;
-  }
 
   // Normalize the key
   let key = event.key;
@@ -82,6 +82,35 @@ function keyboardEventToHotkey(event: KeyboardEvent): string | null {
   } else {
     // Capitalize first letter of special keys (Enter, Tab, etc.)
     key = key.charAt(0).toUpperCase() + key.slice(1);
+  }
+
+  // If no modifiers are pressed, only allow "safe" single keys
+  // (avoid capturing normal typing keys like letters/numbers/space).
+  if (parts.length === 0) {
+    const safeSingles = new Set([
+      "Pause",
+      "ScrollLock",
+      "CapsLock",
+      "NumLock",
+      "Insert",
+      "Home",
+      "End",
+      "PageUp",
+      "PageDown",
+      "Delete",
+      "ArrowUp",
+      "ArrowDown",
+      "ArrowLeft",
+      "ArrowRight",
+      "PrintScreen",
+      "ContextMenu",
+    ]);
+
+    const isFnKey = /^F\d{1,2}$/.test(key);
+    const isSafe = isFnKey || safeSingles.has(key);
+    if (!isSafe) {
+      return null;
+    }
   }
 
   parts.push(key);
@@ -96,11 +125,11 @@ const HotkeyInput = ({
   value,
   onChange,
   disabled = false,
-  placeholder = "Click to set hotkey",
+  placeholder = "Press record to set hotkey",
 }: HotkeyInputProps) => {
   const [isRecording, setIsRecording] = useState(false);
   const [pendingHotkey, setPendingHotkey] = useState<string | null>(null);
-  const inputRef = useRef<HTMLButtonElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   const handleKeyDown = useCallback(
     (event: KeyboardEvent) => {
@@ -155,7 +184,7 @@ const HotkeyInput = ({
     if (!isRecording) return;
 
     const handleClickOutside = (event: MouseEvent) => {
-      if (inputRef.current && !inputRef.current.contains(event.target as Node)) {
+      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
         setIsRecording(false);
         setPendingHotkey(null);
       }
@@ -165,8 +194,13 @@ const HotkeyInput = ({
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [isRecording]);
 
-  const handleClick = () => {
+  const toggleRecording = () => {
     if (disabled) return;
+    if (isRecording) {
+      setIsRecording(false);
+      setPendingHotkey(null);
+      return;
+    }
     setIsRecording(true);
     setPendingHotkey(null);
   };
@@ -180,23 +214,45 @@ const HotkeyInput = ({
       : placeholder;
 
   return (
-    <button
-      ref={inputRef}
-      type="button"
-      onClick={handleClick}
-      disabled={disabled}
-      className={`min-w-[180px] rounded-md px-3 py-2 text-left transition-all ${
-        disabled
-          ? "cursor-not-allowed bg-slate-800 text-slate-500"
-          : isRecording
-            ? "bg-cyan-900/50 text-cyan-300 ring-2 ring-cyan-500"
-            : "bg-slate-900 text-white hover:bg-slate-800"
-      }`}
-    >
-      <span className={!value && !isRecording ? "text-slate-500" : ""}>
-        {displayValue}
-      </span>
-    </button>
+    <div ref={containerRef} className="flex items-center gap-2">
+      <div
+        className={`min-w-[180px] flex-1 rounded-vibe border px-3 py-2 text-left text-sm transition-colors ${
+          disabled
+            ? "cursor-not-allowed border-border bg-surface2 text-muted"
+            : isRecording
+              ? "border-bad/40 bg-bad/10 text-fg ring-2 ring-bad/25"
+              : "border-border bg-surface2 text-fg"
+        }`}
+        aria-live="polite"
+      >
+        <span className={!value && !isRecording ? "text-muted" : ""}>{displayValue}</span>
+      </div>
+
+      <button
+        type="button"
+        onClick={toggleRecording}
+        disabled={disabled}
+        aria-label={isRecording ? "Stop recording hotkey" : "Record hotkey"}
+        title={isRecording ? "Stop recording" : "Record"}
+        className={`inline-flex h-10 w-10 items-center justify-center rounded-vibe border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 focus-visible:ring-offset-2 focus-visible:ring-offset-bg ${
+          disabled
+            ? "cursor-not-allowed border-border bg-surface2 text-muted"
+            : isRecording
+              ? "border-bad/40 bg-bad/15 text-bad"
+              : "border-border bg-surface2 text-muted hover:bg-surface"
+        }`}
+      >
+        {isRecording ? (
+          <svg viewBox="0 0 20 20" className="h-4 w-4" aria-hidden="true">
+            <rect x="5.5" y="5.5" width="9" height="9" rx="1.5" fill="currentColor" />
+          </svg>
+        ) : (
+          <svg viewBox="0 0 20 20" className="h-4 w-4 text-bad" aria-hidden="true">
+            <circle cx="10" cy="10" r="5" fill="currentColor" />
+          </svg>
+        )}
+      </button>
+    </div>
   );
 };
 

@@ -1,12 +1,27 @@
 import { useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { useAppStore, type HudState } from "./state/appStore";
+import { useAppStore, type HudState, type AppSettings } from "./state/appStore";
 import StatusOrb from "./components/StatusOrb";
+import { applyThemePreference } from "./ui/theme";
+import HUD from "./components/HUD";
 
 const OverlayApp = () => {
   const setHudState = useAppStore((state) => state.setHudState);
+  const refreshSettings = useAppStore((state) => state.refreshSettings);
+  const themePreference = useAppStore(
+    (state) => (state.settings?.hudTheme ?? "system") as AppSettings["hudTheme"],
+  );
 
   useEffect(() => {
+    const cleanup = applyThemePreference(themePreference);
+    return cleanup;
+  }, [themePreference]);
+
+  useEffect(() => {
+    refreshSettings().catch((error) =>
+      console.error("Failed to refresh overlay settings", error),
+    );
+
     const unlisteners: Array<() => void> = [];
 
     const registerListener = async () => {
@@ -43,10 +58,11 @@ const OverlayApp = () => {
     return () => {
       unlisteners.forEach((dispose) => dispose());
     };
-  }, [setHudState]);
+  }, [refreshSettings, setHudState]);
 
   return (
-    <div className="pointer-events-none h-screen w-screen bg-transparent">
+    <div className="pointer-events-none relative h-screen w-screen bg-transparent">
+      <HUD />
       <StatusOrb alwaysVisible />
     </div>
   );
