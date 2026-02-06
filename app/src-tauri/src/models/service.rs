@@ -3,6 +3,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     thread,
+    time::{Duration, Instant},
 };
 
 use anyhow::{anyhow, Context, Result};
@@ -112,7 +113,25 @@ fn worker_loop(
             continue;
         };
 
+        let mut last_emit_at = Instant::now() - Duration::from_secs(5);
+        let mut last_progress_bucket: i32 = -1;
+
         match download_and_extract_with_progress(&plan, |progress: DownloadProgress| {
+            let fraction = progress_fraction(progress.downloaded, progress.total);
+            let bucket = (fraction * 100.0).floor() as i32;
+            let now = Instant::now();
+            let should_emit = now.duration_since(last_emit_at) >= Duration::from_millis(150)
+                || bucket >= last_progress_bucket + 1
+                || progress
+                    .total
+                    .is_some_and(|t| t > 0 && progress.downloaded >= t);
+
+            if !should_emit {
+                return;
+            }
+            last_emit_at = now;
+            last_progress_bucket = bucket;
+
             on_progress(
                 &manager,
                 &app,
@@ -143,7 +162,22 @@ fn on_download_success(
 
         if let Some(asset) = guard.asset_by_name_mut(asset_name) {
             let extracted_size = total_size(&outcome.final_path);
+            let mut install_ok = true;
+
             match asset.kind {
+                ModelKind::WhisperCt2 => {
+                    if let Err(error) = crate::models::prepare_ct2_model_dir(&outcome.final_path) {
+                        asset.status =
+                            ModelStatus::Error(format!("CT2 model install incomplete: {error}"));
+                        snapshot = Some(asset.clone());
+                        install_ok = false;
+                    }
+
+                    // Track checksum/size against the primary model bin.
+                    if let Some(model) = find_first_with_name(&outcome.final_path, "model.bin") {
+                        let _ = asset.update_from_file(model);
+                    }
+                }
                 ModelKind::WhisperOnnx | ModelKind::Parakeet => {
                     if let Some(tokens) = find_tokens_file(&outcome.final_path) {
                         let _ = asset.update_from_file(tokens);
@@ -157,19 +191,21 @@ fn on_download_success(
                 _ => {}
             }
 
-            let recorded_size = if extracted_size > 0 {
-                extracted_size
-            } else {
-                outcome.total_size_bytes
-            };
-            asset.set_size_bytes(recorded_size);
-            if asset.checksum.is_none() {
-                if let Some(checksum) = &outcome.checksum {
-                    asset.set_checksum(Some(checksum.clone()));
+            if install_ok {
+                let recorded_size = if extracted_size > 0 {
+                    extracted_size
+                } else {
+                    outcome.total_size_bytes
+                };
+                asset.set_size_bytes(recorded_size);
+                if asset.checksum.is_none() {
+                    if let Some(checksum) = &outcome.checksum {
+                        asset.set_checksum(Some(checksum.clone()));
+                    }
                 }
+                asset.status = ModelStatus::Installed;
+                snapshot = Some(asset.clone());
             }
-            asset.status = ModelStatus::Installed;
-            snapshot = Some(asset.clone());
         }
 
         let save_result = guard.save();
@@ -314,6 +350,17 @@ fn find_first_with_extension(dir: &Path, extension: &str) -> Option<PathBuf> {
     };
     find_first_matching(dir, &predicate)
 }
+
+fn find_first_with_name(dir: &Path, filename: &str) -> Option<PathBuf> {
+    let direct = dir.join(filename);
+    if direct.exists() {
+        return Some(direct);
+    }
+    let predicate = |entry: &fs::DirEntry| entry.file_name().to_str() == Some(filename);
+    find_first_matching(dir, &predicate)
+}
+
+// CT2 models are prepared/validated via crate::models::prepare_ct2_model_dir.
 
 fn find_first_matching<F>(dir: &Path, predicate: &F) -> Option<PathBuf>
 where

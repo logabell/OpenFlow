@@ -951,6 +951,30 @@ const ModelsSection = ({
                   {selectedWhisperRecord.status.message}
                 </div>
               )}
+
+              {selectedWhisperRecord?.status.state === "downloading" && (
+                <div className="mt-3">
+                  <div className="h-2 w-full overflow-hidden rounded-vibe border border-border bg-surface">
+                    <div
+                      className="h-full bg-gradient-to-r from-accent to-accent2"
+                      style={{
+                        width: `${Math.min(100, Math.max(0, Math.round(selectedWhisperRecord.status.progress * 100)))}%`,
+                      }}
+                    />
+                  </div>
+                  <div className="mt-2 flex items-center justify-between text-xs text-muted">
+                    <span>
+                      {Math.round(selectedWhisperRecord.status.progress * 100)}%
+                    </span>
+                    <span>
+                      {formatBytes(selectedWhisperRecord.status.downloadedBytes ?? 0)}
+                      {selectedWhisperRecord.status.totalBytes
+                        ? ` / ${formatBytes(selectedWhisperRecord.status.totalBytes)}`
+                        : ""}
+                    </span>
+                  </div>
+                </div>
+              )}
             </div>
           </Card>
         )}

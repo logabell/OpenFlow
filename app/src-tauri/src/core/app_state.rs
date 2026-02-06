@@ -263,10 +263,50 @@ impl AppState {
         self.ensure_download_service(app)?;
         self.sync_model_environment();
 
+        self.repair_installed_ct2_models(app);
+
         // Auto-download default models if they're not installed
         self.auto_download_default_models(app);
 
         Ok(())
+    }
+
+    fn repair_installed_ct2_models(&self, app: &AppHandle) {
+        let mut snapshots = Vec::new();
+        let result = {
+            let mut guard = match self.models.lock() {
+                Ok(g) => g,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+
+            let root = guard.root().to_path_buf();
+            for asset in guard.assets_mut() {
+                if asset.kind != ModelKind::WhisperCt2 {
+                    continue;
+                }
+                if !matches!(asset.status, ModelStatus::Installed) {
+                    continue;
+                }
+
+                let dir = asset.path(&root);
+                if let Err(error) = crate::models::prepare_ct2_model_dir(&dir) {
+                    asset.status = ModelStatus::Error(format!(
+                        "CT2 model invalid on disk: {error}"
+                    ));
+                    snapshots.push(asset.clone());
+                }
+            }
+
+            guard.save()
+        };
+
+        if let Err(error) = result {
+            tracing::warn!("Failed to repair CT2 models: {error:?}");
+        }
+
+        for snapshot in snapshots {
+            events::emit_model_status(app, snapshot);
+        }
     }
 
     fn auto_download_default_models(&self, app: &AppHandle) {
