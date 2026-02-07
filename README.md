@@ -1,6 +1,6 @@
-# Push-to-Talk STT
+# OpenFlow
 
-Linux-first, privacy-focused push-to-talk speech-to-text desktop application built with Tauri 2.
+Linux-first, privacy-focused speech-to-text dictation desktop application built with Tauri 2.
 This repository is Linux-only; Windows and macOS are not supported.
 
 ## Structure
@@ -52,7 +52,7 @@ sudo usermod -a -G input "$USER"
 3. Allow `/dev/uinput` for the `input` group (udev rule):
 
 ```bash
-sudo tee /etc/udev/rules.d/99-pushtotalk-uinput.rules >/dev/null <<'EOF'
+sudo tee /etc/udev/rules.d/99-openflow-uinput.rules >/dev/null <<'EOF'
 KERNEL=="uinput", MODE="0660", GROUP="input"
 EOF
 

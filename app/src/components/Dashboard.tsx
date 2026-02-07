@@ -96,7 +96,7 @@ const Dashboard = () => {
       <header className="flex items-center justify-between border-b border-border bg-surface px-6 py-4">
         <div className="flex items-baseline gap-3">
           <h1 className="text-xl font-semibold tracking-tight text-fg">
-            Push-to-Talk STT
+            OpenFlow
           </h1>
           <span className="text-xs text-muted">local-first dictation</span>
         </div>
@@ -188,7 +188,7 @@ const Dashboard = () => {
       </main>
 
       <footer className="border-t border-border bg-surface px-6 py-3 text-center text-xs text-muted">
-        Push-to-Talk STT - Local speech-to-text dictation
+        OpenFlow - Local speech-to-text dictation
       </footer>
 
       {showDebug && <DebugPanel onClose={() => setShowDebug(false)} />}

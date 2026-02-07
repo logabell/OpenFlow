@@ -265,9 +265,10 @@ impl ModelManager {
 }
 
 fn resolve_model_dir() -> Result<PathBuf> {
-    let project_dirs = ProjectDirs::from("com", "PushToTalk", "PushToTalk")
-        .context("missing project directories")?;
+    let project_dirs =
+        ProjectDirs::from("com", "OpenFlow", "OpenFlow").context("missing project directories")?;
     let dir = project_dirs.data_dir().join("models");
+
     std::fs::create_dir_all(&dir).context("create models dir")?;
     Ok(dir)
 }

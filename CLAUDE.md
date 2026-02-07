@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Push-to-Talk STT is a local-first, privacy-focused desktop dictation application built with Tauri 2. It captures speech via global push-to-talk hotkeys, performs on-device transcription and cleanup, and pastes polished text into the active field without disturbing the clipboard.
+OpenFlow is a local-first, privacy-focused desktop dictation application built with Tauri 2. It captures speech via global hotkeys, performs on-device transcription and cleanup, and pastes polished text into the active field without disturbing the clipboard.
 
 ## Build & Development Commands
 
@@ -104,7 +104,7 @@ await listen<HudState>("hud-state", (event) => { ... });
 
 ## Model Assets
 
-Models stored in platform-specific app data directory (e.g., `%APPDATA%/PushToTalk/models` on Windows).
+Models stored in platform-specific app data directory (e.g., `%APPDATA%/OpenFlow/models` on Windows).
 
 Environment variables for model paths:
 - `SILERO_VAD_MODEL` - Silero VAD ONNX model
@@ -112,4 +112,4 @@ Environment variables for model paths:
 
 ## Logging
 
-Set `STT_LOG` environment variable to control log level (e.g., `STT_LOG=debug`).
+Set `OPENFLOW_LOG` environment variable to control log level (e.g., `OPENFLOW_LOG=debug`).

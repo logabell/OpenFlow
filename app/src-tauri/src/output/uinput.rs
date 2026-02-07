@@ -17,7 +17,8 @@ use std::time::Duration;
 use super::PasteShortcut;
 
 #[cfg(target_os = "linux")]
-pub const VIRTUAL_KEYBOARD_NAME: &str = "PushToTalk Virtual Keyboard";
+// This string can show up in tools that list input devices.
+pub const VIRTUAL_KEYBOARD_NAME: &str = "OpenFlow Virtual Keyboard";
 
 #[cfg(target_os = "linux")]
 static VIRTUAL_KEYBOARD: Lazy<Mutex<Option<evdev::uinput::VirtualDevice>>> =

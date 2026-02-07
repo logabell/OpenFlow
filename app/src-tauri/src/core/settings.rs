@@ -191,11 +191,13 @@ impl SettingsManager {
 }
 
 fn resolve_config_path() -> Result<PathBuf> {
-    let project_dirs = ProjectDirs::from("com", "PushToTalk", "PushToTalk")
-        .context("missing project directories")?;
+    let project_dirs =
+        ProjectDirs::from("com", "OpenFlow", "OpenFlow").context("missing project directories")?;
     let dir = project_dirs.config_dir();
+    let path = dir.join(CONFIG_FILE);
+
     fs::create_dir_all(dir).context("creating config directory failed")?;
-    Ok(dir.join(CONFIG_FILE))
+    Ok(path)
 }
 
 fn load_settings(path: &Path) -> Result<PersistedSettings> {

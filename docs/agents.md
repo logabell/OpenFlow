@@ -1,4 +1,4 @@
-# Push-to-Talk STT — Agent Log
+# OpenFlow — Agent Log
 
 ## 1. Source of Truth
 
@@ -53,13 +53,13 @@
 
 ## 6. Final PRD (for convenience)
 
-> # Push-to-Talk STT — Windows-First, Local-First Dictation App  
+> # OpenFlow — Windows-First, Local-First Dictation App  
 > **Final Product Requirements Document (PRD)**  
 > _Last Updated: October 2025_  
 >   
 > ## 1. Product Overview  
 > ### 1.1 Intent & Vision (User Perspective)  
-> **Push-to-Talk STT** is a fast, private, and minimalist dictation assistant that runs quietly in the Windows system tray.  
+> **OpenFlow** is a fast, private, and minimalist dictation assistant that runs quietly in the Windows system tray.  
 > When the user presses a global hotkey and speaks, the app captures their voice, cleans the audio, transcribes it locally into clean, properly punctuated text, and instantly pastes the result into the active text field—without overwriting the clipboard or sending any data to the cloud.  
 >   
 > It delivers:  
@@ -157,7 +157,7 @@
 > - Paste Method: Clipboard-preserving injection (default)  
 >   
 > #### Models & Updates  
-> - Model cache path: `%APPDATA%\\PushToTalk\\models`  
+> - Model cache path: `%APPDATA%\\OpenFlow\\models`  
 > - [ Check for model updates ]  
 > - Version status + ✅/⚠️ icons  
 >   
@@ -248,7 +248,7 @@
 >   
 > ## 8. Model Management  
 >   
-> - **Storage:** `%APPDATA%\\PushToTalk\\models`  
+> - **Storage:** `%APPDATA%\\OpenFlow\\models`  
 > - **Types:** Zipformer (INT8/FP16), Whisper variants  
 > - **Verification:** SHA-256 checksum.  
 > - **Download:** Lazy on first use; resumable.  
@@ -335,7 +335,7 @@
 >   
 > ---
 >   
-> # Push-to-Talk STT — Additional Clarifications  
+> # OpenFlow — Additional Clarifications  
 > _Final Addendum (October 2025)_  
 >   
 > ## Latency Fallback  

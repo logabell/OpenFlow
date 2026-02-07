@@ -16,7 +16,10 @@ use audio::{list_input_devices, AudioDeviceInfo};
 use core::{app_state::AppState, pipeline::OutputMode, settings::FrontendSettings};
 use models::ModelAsset;
 use tauri::{AppHandle, Manager};
+use tauri::{image::Image, include_image, WebviewWindowBuilder};
 use tracing::metadata::LevelFilter;
+
+const APP_ICON: Image<'_> = include_image!("./icons/32x32.png");
 
 #[tauri::command]
 async fn get_settings(state: tauri::State<'_, AppState>) -> tauri::Result<FrontendSettings> {
@@ -183,7 +186,8 @@ async fn get_logs() -> Vec<String> {
 }
 
 fn setup_logging() {
-    let filter = std::env::var("STT_LOG")
+    let filter = std::env::var("OPENFLOW_LOG")
+        .or_else(|_| std::env::var("STT_LOG"))
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(LevelFilter::INFO);
@@ -224,6 +228,26 @@ fn main() {
             get_logs
         ])
         .setup(|app| {
+            // Create the main window manually so we can attach an icon at build time.
+            // Some Linux window managers ignore `set_icon` if applied after window creation,
+            // and Wayland shells generally rely on a .desktop entry for taskbar/dock icons.
+            if app.get_webview_window("main").is_none() {
+                if let Some(config) = app
+                    .config()
+                    .app
+                    .windows
+                    .iter()
+                    .find(|w| w.label == "main")
+                    .cloned()
+                {
+                    let _ = WebviewWindowBuilder::from_config(app.handle(), &config)
+                        .and_then(|builder| builder.icon(APP_ICON))
+                        .and_then(|builder| builder.build());
+                }
+            } else if let Some(window) = app.get_webview_window("main") {
+                let _ = window.set_icon(APP_ICON);
+            }
+
             output::tray::initialize(app)?;
             if let Some(state) = app.try_state::<AppState>() {
                 let handle = app.handle();

@@ -194,7 +194,7 @@ if command -v modprobe >/dev/null 2>&1; then
 fi
 
 # Make /dev/uinput writable by the input group.
-RULE_FILE="/etc/udev/rules.d/99-pushtotalk-uinput.rules"
+RULE_FILE="/etc/udev/rules.d/99-openflow-uinput.rules"
 cat > "$RULE_FILE" <<'EOF'
 KERNEL=="uinput", ACTION=="add", MODE="0660", GROUP="input", TEST=="/usr/bin/setfacl", RUN+="/usr/bin/setfacl -m g::rw -m m::rw /dev/$name"
 EOF

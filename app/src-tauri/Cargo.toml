@@ -1,13 +1,13 @@
 [package]
-name = "push-to-talk-stt"
+name = "openflow"
 version = "0.1.0"
-description = "Push-to-Talk STT application backend"
-authors = ["Push-to-Talk Team"]
+description = "OpenFlow application backend"
+authors = ["OpenFlow Team"]
 license = "MIT"
 edition = "2021"
 
 [lib]
-name = "push_to_talk"
+name = "openflow"
 crate-type = ["cdylib", "rlib"]
 
 [build-dependencies]

@@ -1,8 +1,8 @@
-# Push-to-Talk STT — Architecture Blueprint
+# OpenFlow — Architecture Blueprint
 
 ## 1. Vision Recap
 
-Push-to-Talk STT is a local-first, Windows-focused dictation assistant that captures speech via a global push-to-talk gesture, performs on-device transcription and cleanup, and pastes polished text into the active field without disturbing the clipboard. Privacy, speed, and simplicity guide every design choice.
+OpenFlow is a local-first, Windows-focused dictation assistant that captures speech via a global hotkey gesture, performs on-device transcription and cleanup, and pastes polished text into the active field without disturbing the clipboard. Privacy, speed, and simplicity guide every design choice.
 
 ## 2. High-Level System Layout
 
@@ -51,7 +51,7 @@ Push-to-Talk STT is a local-first, Windows-focused dictation assistant that capt
 
 ## 6. Model Lifecycle
 
-- Stored under `%APPDATA%/PushToTalk/models` (Windows).  
+- Stored under `%APPDATA%/OpenFlow/models` (Windows).  
 - On-demand downloads for large assets; progress surfaced in Settings + tray ring.  
 - Checksum validation (SHA-256).  
 - Assets tracked per `ModelKind` with statuses (NotInstalled, Downloading, Installed, Error).  
@@ -59,7 +59,7 @@ Push-to-Talk STT is a local-first, Windows-focused dictation assistant that capt
 
 ## 7. Settings & Persistence
 
-- JSON config at `%APPDATA%/PushToTalk/config.json`.  
+- JSON config at `%APPDATA%/OpenFlow/config.json`.  
 - Fields: hotkey mode, HUD theme, language/auto-detect, autoclean mode, debug transcript toggle.  
 - `debug_transcripts` auto-expires 24 h after activation and surfaces banner in UI (implementation pending).  
 - Advanced options include `auto_update`, `debug_transcripts`, and future enterprise overrides.

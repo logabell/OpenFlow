@@ -1,5 +1,5 @@
 {
-  "name": "push-to-talk-stt",
+  "name": "openflow",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -12,7 +12,7 @@
     "format": "prettier --write \"src/**/*.{ts,tsx,css}\"",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
-    "tauri:icon": "tauri icon ./public/icon.png"
+    "tauri:icon": "tauri icon \"./src-tauri/icons/OpenFlow icon.png\""
   },
   "dependencies": {
     "@fontsource/ibm-plex-mono": "^5.2.7",

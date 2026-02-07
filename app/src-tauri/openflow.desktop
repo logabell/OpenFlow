@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=OpenFlow
+Comment=Local speech-to-text dictation assistant
+Exec=openflow
+Icon=openflow
+Terminal=false
+Type=Application
+Categories=Utility;Audio;Accessibility;
+Keywords=speech;dictation;transcription;voice;audio;stt;
+StartupNotify=true
+StartupWMClass=openflow

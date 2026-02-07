@@ -3445,6 +3445,48 @@ dependencies = [
 ]
 
 [[package]]
+name = "openflow"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bzip2",
+ "cpal",
+ "crossbeam-channel",
+ "ct2rs",
+ "directories",
+ "evdev",
+ "flate2",
+ "futures-util",
+ "globset",
+ "hound",
+ "inotify",
+ "libc",
+ "once_cell",
+ "ort",
+ "parking_lot",
+ "regex",
+ "reqwest 0.11.27",
+ "rodio",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sherpa-rs",
+ "sysinfo",
+ "tar",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-global-shortcut",
+ "thiserror 1.0.69",
+ "time",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "webrtc-audio-processing",
+ "zip 0.6.6",
+]
+
+[[package]]
 name = "openssl"
 version = "0.10.74"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3962,48 +4004,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.106",
-]
-
-[[package]]
-name = "push-to-talk-stt"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bzip2",
- "cpal",
- "crossbeam-channel",
- "ct2rs",
- "directories",
- "evdev",
- "flate2",
- "futures-util",
- "globset",
- "hound",
- "inotify",
- "libc",
- "once_cell",
- "ort",
- "parking_lot",
- "regex",
- "reqwest 0.11.27",
- "rodio",
- "serde",
- "serde_json",
- "sha2",
- "sherpa-rs",
- "sysinfo",
- "tar",
- "tauri",
- "tauri-build",
- "tauri-plugin-global-shortcut",
- "thiserror 1.0.69",
- "time",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "webrtc-audio-processing",
- "zip 0.6.6",
 ]
 
 [[package]]
