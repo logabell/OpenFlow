@@ -57,10 +57,12 @@ export interface ModelRecord {
 
 export type HudState =
   | "idle"
+  | "warming"
   | "listening"
   | "processing"
   | "performance-warning"
-  | "secure-blocked";
+  | "secure-blocked"
+  | "asr-error";
 
 export interface AppSettings {
   hotkeyMode: "hold" | "toggle";

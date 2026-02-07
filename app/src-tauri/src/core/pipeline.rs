@@ -190,6 +190,11 @@ impl SpeechPipeline {
     pub fn set_output_mode(&self, mode: OutputMode) {
         self.inner.set_output_mode(mode);
     }
+
+    pub fn warmup_asr(&self) -> Result<()> {
+        self.inner.asr.warmup()?;
+        Ok(())
+    }
 }
 
 impl SpeechPipelineInner {

@@ -56,35 +56,47 @@ const StatusOrb = ({ alwaysVisible = false }: StatusOrbProps) => {
   const label =
     effectiveState === "listening"
       ? "LISTEN"
+      : effectiveState === "warming"
+        ? "WARM"
       : effectiveState === "processing"
         ? "PROC"
-        : effectiveState === "performance-warning"
-          ? "PERF"
-          : effectiveState === "secure-blocked"
-            ? "SEC"
-            : "IDLE";
+      : effectiveState === "performance-warning"
+        ? "PERF"
+      : effectiveState === "secure-blocked"
+        ? "SEC"
+        : effectiveState === "asr-error"
+          ? "ERR"
+        : "IDLE";
 
   const borderClass =
     effectiveState === "listening"
       ? "border-accent2/70"
+      : effectiveState === "warming"
+        ? "border-white/25"
       : effectiveState === "processing"
         ? "border-white/25"
-        : effectiveState === "performance-warning"
-          ? "border-warn/70"
-          : effectiveState === "secure-blocked"
-            ? "border-bad/70"
-            : "border-white/15";
+      : effectiveState === "performance-warning"
+        ? "border-warn/70"
+      : effectiveState === "secure-blocked"
+        ? "border-bad/70"
+        : effectiveState === "asr-error"
+          ? "border-bad/70"
+        : "border-white/15";
 
   const stripeClass =
     effectiveState === "listening"
       ? "bg-accent2"
+      : effectiveState === "warming"
+        ? "bg-white/50"
       : effectiveState === "processing"
         ? "bg-white/60"
-        : effectiveState === "performance-warning"
-          ? "bg-warn"
-          : effectiveState === "secure-blocked"
-            ? "bg-bad"
-            : "bg-white/30";
+      : effectiveState === "performance-warning"
+        ? "bg-warn"
+      : effectiveState === "secure-blocked"
+        ? "bg-bad"
+        : effectiveState === "asr-error"
+          ? "bg-bad"
+        : "bg-white/30";
 
   return (
     <div className="pointer-events-none absolute inset-0 z-50 flex items-end justify-end pb-2 pr-3">

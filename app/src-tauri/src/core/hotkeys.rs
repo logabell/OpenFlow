@@ -50,7 +50,11 @@ pub async fn register_shortcut(app: &AppHandle, shortcut: &str) -> tauri::Result
         register_evdev_shortcut(app, shortcut)?;
         set_current_state(shortcut, HotkeyBackend::Evdev);
         let _ = app.emit("hotkey-backend", "evdev");
-        events::emit_hud_state(app, "idle");
+        if let Some(state) = app.try_state::<AppState>() {
+            state.set_hud_state(app, "idle");
+        } else {
+            events::emit_hud_state(app, "idle");
+        }
         app.emit("hotkey-registered", shortcut)?;
         return Ok(());
     }
@@ -60,7 +64,11 @@ pub async fn register_shortcut(app: &AppHandle, shortcut: &str) -> tauri::Result
         register_tauri_shortcut(app, shortcut)?;
         set_current_state(shortcut, HotkeyBackend::TauriGlobalShortcut);
         let _ = app.emit("hotkey-backend", "tauri");
-        events::emit_hud_state(app, "idle");
+        if let Some(state) = app.try_state::<AppState>() {
+            state.set_hud_state(app, "idle");
+        } else {
+            events::emit_hud_state(app, "idle");
+        }
         app.emit("hotkey-registered", shortcut)?;
         return Ok(());
     }

@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useAppStore, type HudState, type AppSettings } from "./state/appStore";
 import StatusOrb from "./components/StatusOrb";
@@ -31,6 +32,11 @@ const OverlayApp = () => {
         }
       });
       unlisteners.push(() => hudDispose());
+
+      // Ask backend to replay the latest HUD state (overlay is created lazily).
+      invoke("hud_ready").catch((error) =>
+        console.error("Failed to request HUD replay", error),
+      );
 
       const performanceDispose = await listen("performance-warning", () => {
         setHudState("performance-warning");

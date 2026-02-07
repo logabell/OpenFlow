@@ -64,6 +64,11 @@ const App = () => {
       });
       unlisteners.push(() => hudDispose());
 
+      // Replay current HUD state in case early emissions were missed.
+      invoke("hud_ready").catch((error) =>
+        console.error("Failed to request HUD replay", error),
+      );
+
       const performanceDispose = await listen("performance-warning", () => {
         setHudState("performance-warning");
       });

@@ -150,6 +150,110 @@ impl AsrEngine {
         }
     }
 
+    /// Eagerly load the configured ASR model into memory.
+    ///
+    /// This is used for startup warmup so the first real transcription does not
+    /// pay the model initialization cost.
+    pub fn warmup(&self) -> anyhow::Result<()> {
+        match self.config.backend {
+            AsrBackend::WhisperCt2 => {
+                #[cfg(feature = "asr-ct2")]
+                {
+                    let model_dir = self
+                        .config
+                        .model_dir
+                        .as_ref()
+                        .ok_or_else(|| anyhow::anyhow!("ASR model not installed"))?;
+
+                    let mut guard = self.ct2_whisper.lock();
+                    if guard.is_none() {
+                        info!("Warming CT2 Whisper model from {}", model_dir.display());
+                        *guard = Some(ct2_whisper::load_whisper(
+                            model_dir,
+                            &self.config.ct2_device,
+                            &self.config.ct2_compute_type,
+                            self.config.num_threads,
+                        )?);
+                        info!("CT2 Whisper warmup complete");
+                    }
+                    Ok(())
+                }
+
+                #[cfg(not(feature = "asr-ct2"))]
+                {
+                    anyhow::bail!("CT2 ASR disabled")
+                }
+            }
+            AsrBackend::WhisperOnnx => {
+                #[cfg(feature = "asr-sherpa")]
+                {
+                    let model_dir = self
+                        .config
+                        .model_dir
+                        .as_ref()
+                        .ok_or_else(|| anyhow::anyhow!("ASR model not installed"))?;
+
+                    let language = if self.config.auto_language_detect {
+                        "auto".to_string()
+                    } else {
+                        self.config.language.clone()
+                    };
+
+                    let mut guard = self.whisper.lock();
+                    if guard.is_none() {
+                        info!(
+                            "Warming Whisper (sherpa) model from {}",
+                            model_dir.display()
+                        );
+                        *guard = Some(sherpa::load_whisper(
+                            model_dir,
+                            &language,
+                            &self.config.provider,
+                            self.config.num_threads,
+                        )?);
+                        info!("Whisper (sherpa) warmup complete");
+                    }
+                    Ok(())
+                }
+
+                #[cfg(not(feature = "asr-sherpa"))]
+                {
+                    anyhow::bail!("local ASR disabled")
+                }
+            }
+            AsrBackend::Parakeet => {
+                #[cfg(feature = "asr-sherpa")]
+                {
+                    let model_dir = self
+                        .config
+                        .model_dir
+                        .as_ref()
+                        .ok_or_else(|| anyhow::anyhow!("ASR model not installed"))?;
+
+                    let mut guard = self.parakeet.lock();
+                    if guard.is_none() {
+                        info!(
+                            "Warming Parakeet (sherpa) model from {}",
+                            model_dir.display()
+                        );
+                        *guard = Some(sherpa::load_parakeet(
+                            model_dir,
+                            &self.config.provider,
+                            self.config.num_threads,
+                        )?);
+                        info!("Parakeet warmup complete");
+                    }
+                    Ok(())
+                }
+
+                #[cfg(not(feature = "asr-sherpa"))]
+                {
+                    anyhow::bail!("local ASR disabled")
+                }
+            }
+        }
+    }
+
     #[cfg(feature = "asr-sherpa")]
     fn transcribe_with_sherpa(&self, sample_rate: u32, samples: &[f32]) -> anyhow::Result<String> {
         if sample_rate != 16_000 {

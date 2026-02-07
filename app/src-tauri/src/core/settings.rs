@@ -37,6 +37,40 @@ pub struct FrontendSettings {
     pub legacy_asr_backend: Option<String>,
 }
 
+/// Persisted snapshot of the ASR model selection.
+///
+/// This is intentionally a small subset of FrontendSettings so we can fall back
+/// to a previously known-good model without overwriting unrelated settings.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AsrSelection {
+    pub asr_family: String,
+    pub whisper_backend: String,
+    pub whisper_model: String,
+    pub whisper_model_language: String,
+    pub whisper_precision: String,
+}
+
+impl AsrSelection {
+    pub fn from_frontend(settings: &FrontendSettings) -> Self {
+        Self {
+            asr_family: settings.asr_family.clone(),
+            whisper_backend: settings.whisper_backend.clone(),
+            whisper_model: settings.whisper_model.clone(),
+            whisper_model_language: settings.whisper_model_language.clone(),
+            whisper_precision: settings.whisper_precision.clone(),
+        }
+    }
+
+    pub fn apply_to_frontend(&self, settings: &mut FrontendSettings) {
+        settings.asr_family = self.asr_family.clone();
+        settings.whisper_backend = self.whisper_backend.clone();
+        settings.whisper_model = self.whisper_model.clone();
+        settings.whisper_model_language = self.whisper_model_language.clone();
+        settings.whisper_precision = self.whisper_precision.clone();
+    }
+}
+
 // Defaults are intentionally OS-specific.
 // - Linux uses single-key hotkeys (evdev backend handles these reliably).
 // - Non-Linux uses chord-style defaults that work well with global shortcut backends.
@@ -80,6 +114,8 @@ impl Default for FrontendSettings {
 struct PersistedSettings {
     frontend: FrontendSettings,
     debug_transcripts_until: Option<OffsetDateTime>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_known_good_asr: Option<AsrSelection>,
 }
 
 impl Default for PersistedSettings {
@@ -87,6 +123,7 @@ impl Default for PersistedSettings {
         Self {
             frontend: FrontendSettings::default(),
             debug_transcripts_until: None,
+            last_known_good_asr: None,
         }
     }
 }
@@ -127,6 +164,18 @@ impl SettingsManager {
         guard.frontend = settings.clone();
         guard.frontend.debug_transcripts = settings.debug_transcripts;
 
+        persist_settings(self.path.as_path(), &guard)?;
+        Ok(())
+    }
+
+    pub fn read_last_known_good_asr(&self) -> Option<AsrSelection> {
+        let guard = self.inner.read();
+        guard.last_known_good_asr.clone()
+    }
+
+    pub fn write_last_known_good_asr(&self, selection: AsrSelection) -> Result<()> {
+        let mut guard = self.inner.write();
+        guard.last_known_good_asr = Some(selection);
         persist_settings(self.path.as_path(), &guard)?;
         Ok(())
     }

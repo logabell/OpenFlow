@@ -1,4 +1,6 @@
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
+use std::time::Instant;
 
 use anyhow::{anyhow, Result};
 use parking_lot::Mutex;
@@ -18,7 +20,22 @@ use tauri::WebviewUrl;
 use tracing::{debug, warn};
 
 use super::pipeline::{OutputMode, SpeechPipeline};
-use super::settings::SettingsManager;
+use super::settings::{AsrSelection, SettingsManager};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AsrWarmupState {
+    Warming,
+    Ready,
+    Error,
+}
+
+#[derive(Debug, Clone)]
+struct AsrWarmupTracker {
+    state: AsrWarmupState,
+    warmed_selection: Option<AsrSelection>,
+    target_selection: Option<AsrSelection>,
+    last_error: Option<String>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionState {
@@ -33,6 +50,9 @@ pub struct AppState {
     session: Arc<Mutex<SessionState>>,
     models: Arc<StdMutex<ModelManager>>,
     downloads: Arc<Mutex<Option<ModelDownloadService>>>,
+    hud_state: Arc<Mutex<String>>,
+    asr_warmup: Arc<Mutex<AsrWarmupTracker>>,
+    asr_warmup_generation: Arc<AtomicU64>,
 }
 
 impl AppState {
@@ -44,6 +64,14 @@ impl AppState {
             session: Arc::new(Mutex::new(SessionState::Idle)),
             models: Arc::new(StdMutex::new(models)),
             downloads: Arc::new(Mutex::new(None)),
+            hud_state: Arc::new(Mutex::new("idle".to_string())),
+            asr_warmup: Arc::new(Mutex::new(AsrWarmupTracker {
+                state: AsrWarmupState::Warming,
+                warmed_selection: None,
+                target_selection: None,
+                last_error: None,
+            })),
+            asr_warmup_generation: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -53,6 +81,95 @@ impl AppState {
 
     pub fn model_manager(&self) -> Arc<StdMutex<ModelManager>> {
         self.models.clone()
+    }
+
+    pub fn set_hud_state(&self, app: &AppHandle, state: &str) {
+        {
+            let mut guard = self.hud_state.lock();
+            *guard = state.to_string();
+        }
+        events::emit_hud_state(app, state);
+    }
+
+    pub fn replay_hud_state(&self, app: &AppHandle) {
+        let state = { self.hud_state.lock().clone() };
+        events::emit_hud_state(app, &state);
+    }
+
+    pub fn asr_warmup_state(&self) -> AsrWarmupState {
+        self.asr_warmup.lock().state
+    }
+
+    pub fn kickoff_asr_warmup(&self, app: &AppHandle) {
+        let settings = match self.settings.read_frontend() {
+            Ok(settings) => settings,
+            Err(error) => {
+                tracing::warn!("Failed to read settings for ASR warmup: {error:?}");
+                let mut tracker = self.asr_warmup.lock();
+                tracker.state = AsrWarmupState::Ready;
+                tracker.last_error = Some(error.to_string());
+                return;
+            }
+        };
+
+        let selection = AsrSelection::from_frontend(&settings);
+        let should_start = {
+            let mut tracker = self.asr_warmup.lock();
+            if tracker.state == AsrWarmupState::Ready {
+                if tracker.warmed_selection.as_ref() == Some(&selection) {
+                    return;
+                }
+            }
+            if tracker.state == AsrWarmupState::Warming {
+                if tracker.target_selection.as_ref() == Some(&selection) {
+                    return;
+                }
+            }
+
+            tracker.state = AsrWarmupState::Warming;
+            tracker.target_selection = Some(selection);
+            tracker.last_error = None;
+            true
+        };
+
+        if !should_start {
+            return;
+        }
+
+        let generation = self.asr_warmup_generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let app_handle = app.clone();
+
+        tauri::async_runtime::spawn(async move {
+            let started = Instant::now();
+
+            // Read current selection for logging.
+            let selection_label = {
+                let state = app_handle.state::<AppState>();
+                state
+                    .settings_manager()
+                    .read_frontend()
+                    .map(|s| format_asr_selection_label(&s))
+                    .unwrap_or_else(|_| "unknown".to_string())
+            };
+
+            tracing::info!("asr_warmup_start model={selection_label}");
+
+            let result = warmup_current_asr(&app_handle, generation).await;
+            match result {
+                Ok(()) => {
+                    tracing::info!(
+                        "asr_warmup_end model={selection_label} duration_ms={}",
+                        started.elapsed().as_millis() as u64
+                    );
+                }
+                Err(error) => {
+                    tracing::info!(
+                        "asr_warmup_failed model={selection_label} error={}",
+                        error
+                    );
+                }
+            }
+        });
     }
 
     pub fn start_session(&self, app: &AppHandle) {
@@ -79,6 +196,26 @@ impl AppState {
     }
 
     pub fn start_session_with_overlay(&self, app: &AppHandle, show_overlay: bool) {
+        match self.asr_warmup_state() {
+            AsrWarmupState::Warming => {
+                tracing::info!("hotkey_ignored_engine_warming");
+                if show_overlay {
+                    show_status_overlay(app);
+                }
+                self.set_hud_state(app, "warming");
+                return;
+            }
+            AsrWarmupState::Error => {
+                tracing::warn!("hotkey_ignored_engine_error");
+                if show_overlay {
+                    show_status_overlay(app);
+                }
+                self.set_hud_state(app, "asr-error");
+                return;
+            }
+            AsrWarmupState::Ready => {}
+        }
+
         let should_start = {
             let mut guard = self.session.lock();
             // Only start a new session from Idle. If we're already listening or
@@ -108,7 +245,7 @@ impl AppState {
             hide_status_overlay(app);
         }
 
-        events::emit_hud_state(app, "listening");
+        self.set_hud_state(app, "listening");
     }
 
     pub fn mark_processing(&self, app: &AppHandle) {
@@ -117,7 +254,7 @@ impl AppState {
             return;
         }
         *guard = SessionState::Processing;
-        events::emit_hud_state(app, "processing");
+        self.set_hud_state(app, "processing");
     }
 
     pub fn complete_session(&self, app: &AppHandle) {
@@ -143,7 +280,7 @@ impl AppState {
         };
 
         if matches!(previous, SessionState::Listening) {
-            events::emit_hud_state(app, "processing");
+            self.set_hud_state(app, "processing");
         }
 
         // Clone the pipeline handle so we can finalize without holding the mutex.
@@ -154,7 +291,7 @@ impl AppState {
         // If we weren't in an active session, still force-hide the overlay immediately.
         if matches!(previous, SessionState::Idle) {
             hide_status_overlay(app);
-            events::emit_hud_state(app, "idle");
+            self.set_hud_state(app, "idle");
         }
 
         tauri::async_runtime::spawn(async move {
@@ -176,7 +313,11 @@ impl AppState {
             }
 
             hide_status_overlay(&app_handle);
-            events::emit_hud_state(&app_handle, "idle");
+            if let Some(state) = app_handle.try_state::<AppState>() {
+                state.set_hud_state(&app_handle, "idle");
+            } else {
+                events::emit_hud_state(&app_handle, "idle");
+            }
         });
     }
 
@@ -674,5 +815,276 @@ fn hide_status_overlay(app: &AppHandle) {
         }
     } else {
         tracing::warn!("Overlay window not found when trying to hide");
+    }
+}
+
+fn format_asr_selection_label(settings: &crate::core::settings::FrontendSettings) -> String {
+    if settings.asr_family == "whisper" {
+        format!(
+            "whisper:{}:{}:{}:{}",
+            settings.whisper_backend,
+            settings.whisper_model,
+            settings.whisper_model_language,
+            settings.whisper_precision
+        )
+    } else {
+        "parakeet".to_string()
+    }
+}
+
+fn default_asr_selection() -> AsrSelection {
+    AsrSelection {
+        asr_family: "parakeet".into(),
+        whisper_backend: "ct2".into(),
+        whisper_model: "small".into(),
+        whisper_model_language: "multi".into(),
+        whisper_precision: "int8".into(),
+    }
+}
+
+async fn warmup_current_asr(app: &AppHandle, generation: u64) -> Result<()> {
+    // Helper: only update state if this task is still current.
+    let is_current = |app: &AppHandle| {
+        let state = app.state::<AppState>();
+        state
+            .asr_warmup_generation
+            .load(Ordering::SeqCst)
+            == generation
+    };
+
+    // Attempt warmup for the currently-selected settings.
+    let attempt = warmup_selected_asr(app, generation).await;
+    if attempt.is_ok() {
+        return Ok(());
+    }
+
+    // If the selection failed, fall back to last known-good.
+    let (fallback, current) = {
+        let state = app.state::<AppState>();
+        let current_settings = state.settings_manager().read_frontend()?;
+        let current = AsrSelection::from_frontend(&current_settings);
+        let fallback = state
+            .settings_manager()
+            .read_last_known_good_asr()
+            .unwrap_or_else(default_asr_selection);
+        (fallback, current)
+    };
+
+    if fallback == current {
+        let error = match &attempt {
+            Ok(()) => "unknown warmup failure".to_string(),
+            Err(err) => err.to_string(),
+        };
+        if is_current(app) {
+            let state = app.state::<AppState>();
+            let mut tracker = state.asr_warmup.lock();
+            tracker.state = AsrWarmupState::Error;
+            tracker.last_error = Some(error);
+        }
+        return attempt;
+    }
+
+    // Apply fallback selection to frontend settings and persist.
+    {
+        let state = app.state::<AppState>();
+        let mut settings = state.settings_manager().read_frontend()?;
+        fallback.apply_to_frontend(&mut settings);
+        state.settings_manager().write_frontend(settings)?;
+        if let Err(error) = state.reload_pipeline(app) {
+            tracing::warn!("Failed to reload pipeline for fallback ASR selection: {error:?}");
+        }
+
+        if is_current(app) {
+            let mut tracker = state.asr_warmup.lock();
+            tracker.target_selection = Some(fallback.clone());
+        }
+    }
+
+    // Warm the fallback selection.
+    let result = warmup_selected_asr(app, generation).await;
+    if let Err(error) = &result {
+        if is_current(app) {
+            let state = app.state::<AppState>();
+            let mut tracker = state.asr_warmup.lock();
+            tracker.state = AsrWarmupState::Error;
+            tracker.last_error = Some(error.to_string());
+        }
+    }
+    result
+}
+
+async fn warmup_selected_asr(app: &AppHandle, generation: u64) -> Result<()> {
+    let is_current = |app: &AppHandle| {
+        let state = app.state::<AppState>();
+        state
+            .asr_warmup_generation
+            .load(Ordering::SeqCst)
+            == generation
+    };
+
+    // Snapshot settings for this warmup.
+    let settings = {
+        let state = app.state::<AppState>();
+        state.settings_manager().read_frontend()?
+    };
+    let selection = AsrSelection::from_frontend(&settings);
+
+    ensure_asr_assets_ready(app, &settings, generation).await?;
+
+    if !is_current(app) {
+        return Ok(());
+    }
+
+    // Obtain the latest pipeline (it may be recreated after downloads complete).
+    // After a model install, the download worker calls reload_pipeline(), which briefly
+    // sets the pipeline to None. Wait for it to come back.
+    let pipeline = {
+        let mut waited_ms: u64 = 0;
+        loop {
+            if !is_current(app) {
+                return Ok(());
+            }
+
+            let pipeline = {
+                let state = app.state::<AppState>();
+                let pipeline = state.pipeline.lock().as_ref().cloned();
+                pipeline
+            };
+
+            if let Some(pipeline) = pipeline {
+                if pipeline.asr_config().model_dir.is_some() {
+                    break pipeline;
+                }
+            }
+
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            waited_ms = waited_ms.saturating_add(50);
+            if waited_ms >= 10_000 {
+                anyhow::bail!("pipeline ASR config not ready after model install")
+            }
+        }
+    };
+
+    // Heavy model initialization should run off the async runtime.
+    let pipeline_clone = pipeline.clone();
+    tokio::task::spawn_blocking(move || pipeline_clone.warmup_asr())
+        .await
+        .map_err(|err| anyhow::anyhow!(err.to_string()))??;
+
+    if !is_current(app) {
+        return Ok(());
+    }
+
+    {
+        let state = app.state::<AppState>();
+        let mut tracker = state.asr_warmup.lock();
+        tracker.state = AsrWarmupState::Ready;
+        tracker.warmed_selection = Some(selection.clone());
+        tracker.target_selection = Some(selection.clone());
+        tracker.last_error = None;
+        let _ = state.settings_manager().write_last_known_good_asr(selection);
+    }
+
+    Ok(())
+}
+
+async fn ensure_asr_assets_ready(
+    app: &AppHandle,
+    settings: &crate::core::settings::FrontendSettings,
+    generation: u64,
+) -> Result<()> {
+    let is_current = |app: &AppHandle| {
+        let state = app.state::<AppState>();
+        state
+            .asr_warmup_generation
+            .load(Ordering::SeqCst)
+            == generation
+    };
+
+    let backend = parse_asr_backend(settings);
+
+    // If already installed, we're done.
+    {
+        let state = app.state::<AppState>();
+        if state.resolve_asr_model_dir(settings, &backend).is_some() {
+            return Ok(());
+        }
+    }
+
+    let asset_name = {
+        let state = app.state::<AppState>();
+        state.required_asr_asset_name(settings, &backend)
+    }
+    .ok_or_else(|| anyhow!("no ASR model asset found for selection"))?;
+
+    let mut queued = false;
+    loop {
+        if !is_current(app) {
+            return Ok(());
+        }
+
+        // Check if the model dir is now available.
+        {
+            let state = app.state::<AppState>();
+            if state.resolve_asr_model_dir(settings, &backend).is_some() {
+                return Ok(());
+            }
+        }
+
+        // Check model manager status to decide whether to queue or fail.
+        let status = {
+            let state = app.state::<AppState>();
+            let guard = state
+                .models
+                .lock()
+                .map_err(|err| anyhow!(err.to_string()))?;
+            guard.asset_by_name(&asset_name).map(|asset| asset.status.clone())
+        };
+
+        match status {
+            Some(ModelStatus::Installed) => return Ok(()),
+            Some(ModelStatus::Error(message)) => {
+                anyhow::bail!("model download failed: {message}")
+            }
+            Some(ModelStatus::NotInstalled) => {
+                if !queued {
+                    let state = app.state::<AppState>();
+                    if let Err(error) = state.queue_model_download(app, &asset_name) {
+                        tracing::warn!("Failed to queue ASR model download: {error:?}");
+                    } else {
+                        queued = true;
+                    }
+                }
+            }
+            Some(ModelStatus::Downloading { .. }) => {
+                // Wait.
+            }
+            None => {
+                // Asset might not exist in manifest; nothing we can do.
+                anyhow::bail!("unknown ASR model asset: {asset_name}")
+            }
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+}
+
+impl AppState {
+    fn required_asr_asset_name(
+        &self,
+        settings: &crate::core::settings::FrontendSettings,
+        backend: &AsrBackend,
+    ) -> Option<String> {
+        match *backend {
+            AsrBackend::WhisperOnnx | AsrBackend::WhisperCt2 => {
+                resolve_whisper_asset_name(settings, backend)
+            }
+            AsrBackend::Parakeet => {
+                let guard = self.models.lock().ok()?;
+                guard
+                    .primary_asset(&ModelKind::Parakeet)
+                    .map(|asset| asset.name.clone())
+            }
+        }
     }
 }

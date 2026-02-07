@@ -4,10 +4,12 @@ import { useAppStore } from "../state/appStore";
 
 const stateCopy: Record<string, string> = {
   idle: "",
+  warming: "Warming…",
   listening: "Listening…",
   processing: "Processing…",
   "performance-warning": "Performance optimized",
   "secure-blocked": "Secure field blocked",
+  "asr-error": "Speech model failed to load",
 };
 
 const HUD = () => {
@@ -25,10 +27,12 @@ const HUD = () => {
           <motion.div
             className={clsx(
               "relative w-[520px] max-w-[92vw] overflow-hidden rounded-vibe border bg-hud-background/90 px-4 py-3 text-white shadow-[0_8px_0_hsl(var(--shadow)/0.35),0_24px_70px_hsl(var(--shadow)/0.55)] backdrop-blur",
+              hudState === "warming" && "border-white/25",
               hudState === "listening" && "border-accent2/60",
               hudState === "processing" && "border-white/20",
               hudState === "performance-warning" && "border-warn/70",
               hudState === "secure-blocked" && "border-bad/70",
+              hudState === "asr-error" && "border-bad/70",
             )}
             initial={{ opacity: 0, y: 24 }}
             animate={{ opacity: 1, y: 0 }}
@@ -71,10 +75,12 @@ const HUD = () => {
             <div
               className={clsx(
                 "absolute inset-x-0 bottom-0 h-1",
+                hudState === "warming" && "bg-white/50",
                 hudState === "listening" && "bg-accent2",
                 hudState === "processing" && "bg-white/60",
                 hudState === "performance-warning" && "bg-warn",
                 hudState === "secure-blocked" && "bg-bad",
+                hudState === "asr-error" && "bg-bad",
               )}
             />
           </motion.div>

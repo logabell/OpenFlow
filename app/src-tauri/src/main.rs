@@ -43,9 +43,18 @@ async fn update_settings(
         .configure_pipeline(Some(&app), &fresh)
         .map_err(tauri::Error::from)?;
 
+    // Warm the selected ASR model in the background so the next dictation starts instantly.
+    state.kickoff_asr_warmup(&app);
+
     // Re-register hotkey if the mode or hotkey bindings have changed
     core::hotkeys::reregister(&app).await?;
 
+    Ok(())
+}
+
+#[tauri::command]
+async fn hud_ready(app: AppHandle, state: tauri::State<'_, AppState>) -> tauri::Result<()> {
+    state.replay_hud_state(&app);
     Ok(())
 }
 
@@ -197,6 +206,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             get_settings,
             update_settings,
+            hud_ready,
             register_hotkeys,
             unregister_hotkeys,
             linux_permissions_status,
@@ -221,6 +231,9 @@ fn main() {
                 if let Err(error) = state.initialize_pipeline(&handle) {
                     tracing::warn!("Failed to initialize pipeline: {error:?}");
                 }
+
+                // Always start ASR warmup on launch (non-blocking).
+                state.kickoff_asr_warmup(&handle);
                 #[cfg(debug_assertions)]
                 {
                     crate::output::logs::initialize(&handle);
