@@ -37,10 +37,18 @@ pub struct FrontendSettings {
     pub legacy_asr_backend: Option<String>,
 }
 
-/// Default hotkey for push-to-talk mode (Alt+Shift+A avoids IME conflicts on Linux)
-pub const DEFAULT_PUSH_TO_TALK_HOTKEY: &str = "Alt+Shift+A";
-/// Default hotkey for toggle-to-talk mode
-pub const DEFAULT_TOGGLE_TO_TALK_HOTKEY: &str = "Alt+Shift+S";
+// Defaults are intentionally OS-specific.
+// - Linux uses single-key hotkeys (evdev backend handles these reliably).
+// - Non-Linux uses chord-style defaults that work well with global shortcut backends.
+#[cfg(target_os = "linux")]
+pub const DEFAULT_PUSH_TO_TALK_HOTKEY: &str = "RightAlt";
+#[cfg(target_os = "linux")]
+pub const DEFAULT_TOGGLE_TO_TALK_HOTKEY: &str = "RightAlt";
+
+#[cfg(not(target_os = "linux"))]
+pub const DEFAULT_PUSH_TO_TALK_HOTKEY: &str = "Ctrl+Space";
+#[cfg(not(target_os = "linux"))]
+pub const DEFAULT_TOGGLE_TO_TALK_HOTKEY: &str = "Ctrl+Shift+Space";
 
 impl Default for FrontendSettings {
     fn default() -> Self {
@@ -176,6 +184,28 @@ fn maybe_expire_debug_transcripts(settings: &mut PersistedSettings) {
 }
 
 fn migrate_frontend_settings(settings: &mut FrontendSettings) {
+    // Keep hotkeys non-empty.
+    if settings.push_to_talk_hotkey.trim().is_empty() {
+        settings.push_to_talk_hotkey = DEFAULT_PUSH_TO_TALK_HOTKEY.into();
+    }
+    if settings.toggle_to_talk_hotkey.trim().is_empty() {
+        settings.toggle_to_talk_hotkey = DEFAULT_TOGGLE_TO_TALK_HOTKEY.into();
+    }
+
+    // Linux: migrate legacy defaults to the newer single-key default.
+    // Only rewrite when the user is still on the old shipped defaults.
+    if cfg!(target_os = "linux") {
+        const LEGACY_LINUX_PUSH_TO_TALK: &str = "Alt+Shift+A";
+        const LEGACY_LINUX_TOGGLE_TO_TALK: &str = "Alt+Shift+S";
+
+        if settings.push_to_talk_hotkey == LEGACY_LINUX_PUSH_TO_TALK {
+            settings.push_to_talk_hotkey = DEFAULT_PUSH_TO_TALK_HOTKEY.into();
+        }
+        if settings.toggle_to_talk_hotkey == LEGACY_LINUX_TOGGLE_TO_TALK {
+            settings.toggle_to_talk_hotkey = DEFAULT_TOGGLE_TO_TALK_HOTKEY.into();
+        }
+    }
+
     if let Some(legacy) = settings.legacy_asr_backend.take() {
         match legacy.as_str() {
             "whisper" => {

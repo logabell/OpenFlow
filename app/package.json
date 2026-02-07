@@ -15,12 +15,13 @@
     "tauri:icon": "tauri icon ./public/icon.png"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.0.0",
     "@fontsource/ibm-plex-mono": "^5.2.7",
     "@fontsource/ibm-plex-sans": "^5.2.8",
+    "@tauri-apps/api": "^2.0.0",
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.1",
     "framer-motion": "^11.0.0",
+    "lucide-react": "^0.563.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "zustand": "^4.5.2"

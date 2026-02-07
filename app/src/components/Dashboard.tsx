@@ -1,5 +1,10 @@
 import { useState } from "react";
-import { useAppStore } from "../state/appStore";
+import { Loader2, Lock, Mic, Settings as SettingsIcon, Zap } from "lucide-react";
+import {
+  DEFAULT_PUSH_TO_TALK_HOTKEY,
+  DEFAULT_TOGGLE_TO_TALK_HOTKEY,
+  useAppStore,
+} from "../state/appStore";
 import DebugPanel from "./DebugPanel";
 import { Badge, Button, Card, Kbd } from "../ui/primitives";
 
@@ -8,7 +13,6 @@ const Dashboard = () => {
     toggleSettings,
     hudState,
     models,
-    startDictation,
     settings,
     metrics,
   } = useAppStore();
@@ -59,6 +63,34 @@ const Dashboard = () => {
           ? "Models"
           : "Healthy";
 
+  const isToggleMode = settings?.hotkeyMode === "toggle";
+  const modeVerb = isToggleMode ? "Toggle" : "Hold";
+  const modeHotkey = isToggleMode
+    ? (settings?.toggleToTalkHotkey ?? DEFAULT_TOGGLE_TO_TALK_HOTKEY)
+    : (settings?.pushToTalkHotkey ?? DEFAULT_PUSH_TO_TALK_HOTKEY);
+
+  const heroIcon =
+    hudState === "processing" ? (
+      <Loader2 className="h-12 w-12 animate-spin" aria-hidden="true" />
+    ) : hudState === "performance-warning" ? (
+      <Zap className="h-12 w-12" aria-hidden="true" />
+    ) : hudState === "secure-blocked" ? (
+      <Lock className="h-12 w-12" aria-hidden="true" />
+    ) : (
+      <Mic className="h-12 w-12" aria-hidden="true" />
+    );
+
+  const heroIconWrapClass =
+    hudState === "secure-blocked"
+      ? "border-bad/30 bg-bad/10 text-bad"
+      : hudState === "performance-warning"
+        ? "border-warn/30 bg-warn/10 text-warn"
+        : hudState === "processing"
+          ? "border-info/30 bg-info/10 text-info"
+          : hudState === "listening"
+            ? "border-accent/30 bg-accent/10 text-accent animate-pulse"
+            : "border-border bg-surface2 text-fg";
+
   return (
     <div className="vibe-page vibe-grid flex min-h-screen flex-col bg-bg text-fg">
       <header className="flex items-center justify-between border-b border-border bg-surface px-6 py-4">
@@ -81,6 +113,7 @@ const Dashboard = () => {
             Debug
           </Button>
           <Button variant="primary" size="sm" onClick={() => toggleSettings(true)}>
+            <SettingsIcon className="h-4 w-4" aria-hidden="true" />
             Settings
           </Button>
         </div>
@@ -88,12 +121,12 @@ const Dashboard = () => {
 
       <main className="flex flex-1 flex-col items-center justify-center gap-8 p-8">
         <div className="w-full max-w-2xl text-center">
-          <div className="mb-3 text-6xl">
-            {hudState === "listening" && "🎙️"}
-            {hudState === "processing" && "⚙️"}
-            {hudState === "idle" && "🎤"}
-            {hudState === "performance-warning" && "⚡"}
-            {hudState === "secure-blocked" && "🔒"}
+          <div className="mb-4 flex items-center justify-center">
+            <div
+              className={`inline-flex h-20 w-20 items-center justify-center rounded-full border shadow-[0_2px_0_hsl(var(--shadow)/0.16)] ${heroIconWrapClass}`}
+            >
+              {heroIcon}
+            </div>
           </div>
           <h2 className="text-2xl font-semibold tracking-tight text-fg">
             {hudState === "idle" && "Ready to Dictate"}
@@ -103,29 +136,19 @@ const Dashboard = () => {
             {hudState === "secure-blocked" && "Secure Field Blocked"}
           </h2>
           <p className="mt-2 text-muted">
-            Press <Kbd>Ctrl+Space</Kbd> to start dictating
-          </p>
-          <div className="mt-4 flex items-center justify-center gap-2">
-            <Button
-              variant="primary"
-              size="lg"
-              onClick={() => startDictation()}
-              disabled={hudState !== "idle"}
-            >
-              {hudState === "idle"
-                ? "Start Dictation (Manual)"
-                : hudState === "listening"
-                  ? "Listening..."
-                  : "Processing..."}
-            </Button>
-            {hudState === "performance-warning" && (
-              <Badge tone="warn">Performance Mode</Badge>
+            {settings ? (
+              <>
+                {modeVerb} <Kbd>{modeHotkey}</Kbd> to start dictating
+              </>
+            ) : (
+              <>
+                Press <Kbd>{DEFAULT_PUSH_TO_TALK_HOTKEY}</Kbd> to start dictating
+              </>
             )}
-            {hudState === "secure-blocked" && <Badge tone="bad">Secure Field</Badge>}
-          </div>
+          </p>
         </div>
 
-        <div className="grid w-full max-w-2xl gap-4 md:grid-cols-2">
+        <div className="grid w-full max-w-2xl grid-cols-1 gap-4">
           <StatusCard
             title="Speech Recognition"
             status={asrModel?.status.state === "installed" ? "ready" : "not-installed"}

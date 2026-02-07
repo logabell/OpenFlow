@@ -95,8 +95,16 @@ export interface PerformanceMetrics {
   performanceMode: boolean;
 }
 
-export const DEFAULT_PUSH_TO_TALK_HOTKEY = "Ctrl+Space";
-export const DEFAULT_TOGGLE_TO_TALK_HOTKEY = "Ctrl+Shift+Space";
+function isLinuxRuntime(): boolean {
+  if (typeof navigator === "undefined") return false;
+  const platform = (navigator.platform ?? "").toLowerCase();
+  const ua = (navigator.userAgent ?? "").toLowerCase();
+  return platform.includes("linux") || ua.includes("linux");
+}
+
+export const DEFAULT_PUSH_TO_TALK_HOTKEY = isLinuxRuntime() ? "RightAlt" : "Ctrl+Space";
+export const DEFAULT_TOGGLE_TO_TALK_HOTKEY =
+  isLinuxRuntime() ? "RightAlt" : "Ctrl+Shift+Space";
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   hotkeyMode: "hold",
