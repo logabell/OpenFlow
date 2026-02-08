@@ -10,19 +10,15 @@ UDEV_RULE_FILE="/etc/udev/rules.d/99-openflow-uinput.rules"
 STATE_DIR="/var/lib/openflow"
 STATE_FILE="$STATE_DIR/install-state.json"
 
-WEBKIT_MODE="auto" # auto | 40 | 41
-WEBKIT_TRACK=""    # 40 | 41 (set during install_deps)
-
-ASSET_KEY=""        # e.g. linux-x86_64-webkit41
-ASSET_TARBALL=""    # e.g. openflow-linux-x86_64-webkit41.tar.gz
-ASSET_SHA256=""     # e.g. openflow-linux-x86_64-webkit41.tar.gz.sha256
+ASSET_TARBALL="openflow-linux-x86_64.tar.gz"
+ASSET_SHA256="$ASSET_TARBALL.sha256"
 
 usage() {
   cat <<'EOF'
 OpenFlow installer (Linux x86_64)
 
 Usage:
-  install.sh [--yes] [--webkit=auto|40|41] [--models=parakeet,silero | --no-models]
+  install.sh [--yes] [--models=parakeet,silero | --no-models]
   install.sh --uninstall
 
 Environment:
@@ -30,7 +26,6 @@ Environment:
 
 Examples:
   ./install.sh
-  ./install.sh --webkit=40
   ./install.sh --yes --models=parakeet,silero
   ./install.sh --uninstall
 EOF
@@ -80,10 +75,6 @@ while [ "$#" -gt 0 ]; do
     --models=*)
       MODELS_MODE="list"
       MODELS_LIST="${1#--models=}"
-      shift
-      ;;
-    --webkit=*)
-      WEBKIT_MODE="${1#--webkit=}"
       shift
       ;;
     *)
@@ -170,20 +161,6 @@ pm_install_any() {
   return 1
 }
 
-apt_pkg_available() {
-  local pkg="$1"
-  apt-cache show "$pkg" >/dev/null 2>&1
-}
-
-apt_pick_webkit40_runtime_pkg() {
-  # Ubuntu/Debian name WebKitGTK 4.0 runtime as libwebkit2gtk-4.0-<abi> (abi is a number).
-  # Pick the newest available ABI package name so we don't have to hardcode -37/-xx.
-  apt-cache search --names-only '^libwebkit2gtk-4\\.0-[0-9][0-9]*$' 2>/dev/null \
-    | awk '{print $1}' \
-    | sort -t- -k3,3n \
-    | tail -n 1
-}
-
 have_shared_lib_soname() {
   local soname="$1"
 
@@ -203,24 +180,6 @@ have_shared_lib_soname() {
 
 have_appindicator_libs() {
   have_shared_lib_soname "libayatana-appindicator3.so.1" || have_shared_lib_soname "libappindicator3.so.1"
-}
-
-set_assets_from_webkit_track() {
-  case "$WEBKIT_TRACK" in
-    41)
-      ASSET_KEY="linux-x86_64-webkit41"
-      ASSET_TARBALL="openflow-linux-x86_64-webkit41.tar.gz"
-      ;;
-    40)
-      ASSET_KEY="linux-x86_64-webkit40"
-      ASSET_TARBALL="openflow-linux-x86_64-webkit40.tar.gz"
-      ;;
-    *)
-      die "internal error: WEBKIT_TRACK must be 40 or 41 (got '$WEBKIT_TRACK')"
-      ;;
-  esac
-
-  ASSET_SHA256="$ASSET_TARBALL.sha256"
 }
 
 install_deps() {
@@ -243,39 +202,10 @@ install_deps() {
         die "failed to install ALSA runtime (tried libasound2t64, libasound2)"
       fi
 
-      # Decide WebKitGTK track.
-      case "$WEBKIT_MODE" in
-        auto)
-          if apt_pkg_available libwebkit2gtk-4.1-0; then
-            WEBKIT_TRACK=41
-          else
-            WEBKIT_TRACK=40
-          fi
-          ;;
-        41)
-          WEBKIT_TRACK=41
-          ;;
-        40)
-          WEBKIT_TRACK=40
-          ;;
-        *)
-          die "invalid --webkit mode: '$WEBKIT_MODE' (expected auto|40|41)"
-          ;;
-      esac
-
-      if [ "$WEBKIT_TRACK" -eq 41 ]; then
-        if ! apt_pkg_available libwebkit2gtk-4.1-0; then
-          die "libwebkit2gtk-4.1-0 not available on this system. Try: --webkit=40"
-        fi
-        pm_install apt libwebkit2gtk-4.1-0
-      else
-        local webkit40_pkg
-        webkit40_pkg="$(apt_pick_webkit40_runtime_pkg)"
-        if [ -z "$webkit40_pkg" ]; then
-          die "could not find a WebKitGTK 4.0 runtime package (expected libwebkit2gtk-4.0-<abi>)"
-        fi
-        pm_install apt "$webkit40_pkg"
+      if ! apt-cache show libwebkit2gtk-4.1-0 >/dev/null 2>&1; then
+        die "OpenFlow requires WebKitGTK 4.1 (libwebkit2gtk-4.1-0). This distro is likely unsupported; try Ubuntu 24.04+ or Fedora 40+."
       fi
+      pm_install apt libwebkit2gtk-4.1-0
 
       # Tray: dynamically loaded at runtime (ayatana preferred).
       if ! have_appindicator_libs; then
@@ -286,18 +216,6 @@ install_deps() {
       fi
       ;;
     dnf)
-      case "$WEBKIT_MODE" in
-        auto|41)
-          WEBKIT_TRACK=41
-          ;;
-        40)
-          die "Fedora/RHEL-family builds require WebKitGTK 4.1; --webkit=40 is unsupported here"
-          ;;
-        *)
-          die "invalid --webkit mode: '$WEBKIT_MODE' (expected auto|40|41)"
-          ;;
-      esac
-
       pm_install dnf wl-clipboard xclip polkit acl bzip2 curl ca-certificates alsa-lib gtk3 webkit2gtk4.1 libevdev
 
       if ! have_appindicator_libs; then
@@ -308,18 +226,6 @@ install_deps() {
       fi
       ;;
     pacman)
-      case "$WEBKIT_MODE" in
-        auto|41)
-          WEBKIT_TRACK=41
-          ;;
-        40)
-          die "Arch-based builds require WebKitGTK 4.1; --webkit=40 is unsupported here"
-          ;;
-        *)
-          die "invalid --webkit mode: '$WEBKIT_MODE' (expected auto|40|41)"
-          ;;
-      esac
-
       pm_install pacman wl-clipboard xclip polkit acl bzip2 curl ca-certificates alsa-lib gtk3 webkit2gtk libevdev
 
       if ! have_appindicator_libs; then
@@ -340,27 +246,7 @@ install_deps() {
         die "failed to install ALSA runtime (tried alsa-lib, alsa)"
       fi
 
-      case "$WEBKIT_MODE" in
-        auto)
-          if pm_install zypper libwebkit2gtk-4_1-0; then
-            WEBKIT_TRACK=41
-          else
-            pm_install zypper libwebkit2gtk-4_0-0
-            WEBKIT_TRACK=40
-          fi
-          ;;
-        41)
-          pm_install zypper libwebkit2gtk-4_1-0
-          WEBKIT_TRACK=41
-          ;;
-        40)
-          pm_install zypper libwebkit2gtk-4_0-0
-          WEBKIT_TRACK=40
-          ;;
-        *)
-          die "invalid --webkit mode: '$WEBKIT_MODE' (expected auto|40|41)"
-          ;;
-      esac
+      pm_install zypper libwebkit2gtk-4_1-0
 
       if ! have_appindicator_libs; then
         pm_install_any zypper libayatana-appindicator3-1 libappindicator3-1 || die "failed to install appindicator runtime (tried libayatana-appindicator3-1, libappindicator3-1)"
@@ -382,14 +268,6 @@ install_deps() {
       return 1
       ;;
   esac
-
-  if [ -z "$WEBKIT_TRACK" ]; then
-    die "internal error: WEBKIT_TRACK not set after dependency installation"
-  fi
-
-  set_assets_from_webkit_track
-
-  echo "Using WebKitGTK track: $WEBKIT_TRACK (asset=$ASSET_TARBALL)"
 }
 
 validate_runtime_links() {
@@ -432,10 +310,6 @@ verify_sha256() {
 install_app_tarball() {
   local tmp
   tmp="$(mktemp -d)"
-
-  if [ -z "$ASSET_TARBALL" ] || [ -z "$ASSET_SHA256" ]; then
-    die "internal error: release asset name not selected"
-  fi
 
   echo "Downloading release assets from $BASE_URL..."
   download_file "$BASE_URL/$ASSET_TARBALL" "$tmp/$ASSET_TARBALL"

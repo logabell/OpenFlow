@@ -41,19 +41,7 @@ if [ ! -x "$BIN" ]; then
   exit 1
 fi
 
-echo "Detecting WebKitGTK ABI..."
-WEBKIT_TRACK=""
-if ldd "$BIN" 2>/dev/null | grep -q "libwebkit2gtk-4\\.1\\.so\\.0"; then
-  WEBKIT_TRACK="41"
-elif ldd "$BIN" 2>/dev/null | grep -q "libwebkit2gtk-4\\.0\\.so"; then
-  WEBKIT_TRACK="40"
-else
-  echo "Could not determine linked WebKitGTK ABI from ldd output." >&2
-  echo "Expected libwebkit2gtk-4.1.so.0 or libwebkit2gtk-4.0.so.*" >&2
-  exit 1
-fi
-
-ASSET_KEY="linux-x86_64-webkit${WEBKIT_TRACK}"
+ASSET_KEY="linux-x86_64"
 
 STAGE="$(mktemp -d)"
 cleanup() { rm -rf "$STAGE"; }
@@ -109,7 +97,7 @@ printf '%s\n' "v$VERSION" > "$STAGE/openflow/VERSION"
 # Used by the in-app updater to pick the correct release asset.
 printf '%s\n' "$ASSET_KEY" > "$STAGE/openflow/BUILD_FLAVOR"
 
-TARBALL_NAME="openflow-linux-x86_64-webkit${WEBKIT_TRACK}.tar.gz"
+TARBALL_NAME="openflow-linux-x86_64.tar.gz"
 TARBALL_PATH="$OUT_DIR/$TARBALL_NAME"
 
 echo "Creating $TARBALL_NAME..."
@@ -124,7 +112,7 @@ if [ -f "$ROOT_DIR/install.sh" ]; then
 fi
 
 SHA256="$(awk 'NR==1{print $1; exit}' "$OUT_DIR/$TARBALL_NAME.sha256")"
-cat > "$OUT_DIR/latest.${ASSET_KEY}.json" <<EOF
+cat > "$OUT_DIR/latest.json" <<EOF
 {
   "version": "v$VERSION",
   "assets": {
@@ -137,23 +125,10 @@ cat > "$OUT_DIR/latest.${ASSET_KEY}.json" <<EOF
 }
 EOF
 
-cp "$OUT_DIR/latest.${ASSET_KEY}.json" "$OUT_DIR/latest.json"
-
-cat > "$OUT_DIR/asset.${ASSET_KEY}.json" <<EOF
-{
-  "key": "${ASSET_KEY}",
-  "tarball": "${TARBALL_NAME}",
-  "sha256File": "${TARBALL_NAME}.sha256",
-  "sha256": "${SHA256}"
-}
-EOF
-
 echo "Done."
 echo "- $TARBALL_PATH"
 echo "- $TARBALL_PATH.sha256"
 echo "- $OUT_DIR/latest.json"
-echo "- $OUT_DIR/latest.${ASSET_KEY}.json"
-echo "- $OUT_DIR/asset.${ASSET_KEY}.json"
 if [ -f "$OUT_DIR/install.sh" ]; then
   echo "- $OUT_DIR/install.sh"
 fi
