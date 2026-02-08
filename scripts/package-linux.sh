@@ -32,7 +32,7 @@ echo "Building frontend..."
 (cd "$APP_DIR" && yarn build)
 
 echo "Building backend (release)..."
-(cd "$TAURI_DIR" && ORT_PREFER_DYNAMIC_LINK=1 cargo build --release)
+(cd "$TAURI_DIR" && cargo build --release)
 
 BIN="$TAURI_DIR/target/release/openflow"
 LIB_DIR_SRC="$TAURI_DIR/target/release"
