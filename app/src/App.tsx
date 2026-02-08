@@ -15,11 +15,23 @@ import ToastStack from "./components/ToastStack";
 
 type LinuxPermissionsStatus = {
   uinputWritable: boolean;
+  clipboardBackend: string;
   wlCopyAvailable: boolean;
   wlPasteAvailable: boolean;
+  xclipAvailable: boolean;
   waylandSession: boolean;
   xdgRuntimeDirAvailable: boolean;
   details: string[];
+};
+
+type UpdateCheckResult = {
+  currentVersion: string;
+  latestVersion: string;
+  updateAvailable: boolean;
+  tarballUrl?: string | null;
+  sha256Url?: string | null;
+  checkedAtUnix: number;
+  fromCache: boolean;
 };
 
 type PasteFailedPayload = {
@@ -163,11 +175,19 @@ const App = () => {
 
           const linux = payload.linux;
           if (linux) {
-            if (!linux.waylandSession || !linux.xdgRuntimeDirAvailable) {
-              parts.push("Wayland session variables look missing.");
-            }
-            if (!linux.wlCopyAvailable || !linux.wlPasteAvailable) {
-              parts.push("Install wl-clipboard (wl-copy/wl-paste).");
+            if (linux.clipboardBackend === "wayland") {
+              if (!linux.waylandSession || !linux.xdgRuntimeDirAvailable) {
+                parts.push("Wayland session variables look missing.");
+              }
+              if (!linux.wlCopyAvailable || !linux.wlPasteAvailable) {
+                parts.push("Install wl-clipboard (wl-copy/wl-paste).");
+              }
+            } else if (linux.clipboardBackend === "x11") {
+              if (!linux.xclipAvailable) {
+                parts.push("Install xclip.");
+              }
+            } else {
+              parts.push("Install wl-clipboard (Wayland) or xclip (X11) for clipboard support.");
             }
             if (!linux.uinputWritable) {
               parts.push(
@@ -228,6 +248,24 @@ const App = () => {
     invoke("register_hotkeys").catch((error) =>
       console.error("Failed to register hotkeys", error),
     );
+
+    // Check for updates in the background (cached on the backend).
+    invoke<UpdateCheckResult>("check_for_updates", { force: false })
+      .then((result) => {
+        if (!result?.updateAvailable) return;
+        notify({
+          title: `Update available: ${result.latestVersion}`,
+          description: "Open Settings to download and apply the update.",
+          variant: "info",
+          action: {
+            label: "Open Settings",
+            onClick: () => toggleSettings(true),
+          },
+        });
+      })
+      .catch((error) => {
+        console.debug("Update check failed", error);
+      });
 
     return () => {
       unlisteners.forEach((dispose) => dispose());

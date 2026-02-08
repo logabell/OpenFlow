@@ -1,30 +1,17 @@
-#[cfg(target_os = "linux")]
 use evdev::{uinput::VirtualDeviceBuilder, AttributeSet, EventType, InputEvent, Key};
-
-#[cfg(target_os = "linux")]
 use once_cell::sync::Lazy;
-
-#[cfg(target_os = "linux")]
 use parking_lot::Mutex;
-
-#[cfg(target_os = "linux")]
 use std::thread::sleep;
-
-#[cfg(target_os = "linux")]
 use std::time::Duration;
 
-#[cfg(target_os = "linux")]
 use super::PasteShortcut;
 
-#[cfg(target_os = "linux")]
 // This string can show up in tools that list input devices.
 pub const VIRTUAL_KEYBOARD_NAME: &str = "OpenFlow Virtual Keyboard";
 
-#[cfg(target_os = "linux")]
 static VIRTUAL_KEYBOARD: Lazy<Mutex<Option<evdev::uinput::VirtualDevice>>> =
     Lazy::new(|| Mutex::new(None));
 
-#[cfg(target_os = "linux")]
 fn get_or_create_virtual_keyboard() -> anyhow::Result<()> {
     let mut guard = VIRTUAL_KEYBOARD.lock();
     if guard.is_some() {
@@ -48,7 +35,6 @@ fn get_or_create_virtual_keyboard() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
 pub fn send_paste(shortcut: PasteShortcut) -> anyhow::Result<()> {
     get_or_create_virtual_keyboard()?;
 
@@ -87,11 +73,3 @@ pub fn send_paste(shortcut: PasteShortcut) -> anyhow::Result<()> {
 
     Ok(())
 }
-
-#[cfg(not(target_os = "linux"))]
-pub fn send_paste(_shortcut: super::PasteShortcut) -> anyhow::Result<()> {
-    anyhow::bail!("uinput paste injection is only supported on Linux")
-}
-
-#[cfg(not(target_os = "linux"))]
-pub const VIRTUAL_KEYBOARD_NAME: &str = "";

@@ -1,4 +1,5 @@
 use std::{
+    fs,
     fs::File,
     io::{BufReader, Read},
     path::Path,
@@ -24,4 +25,17 @@ pub fn compute_sha256(path: &Path) -> Result<String> {
 
     let hash = hasher.finalize();
     Ok(format!("{:x}", hash))
+}
+
+pub fn total_size(path: &Path) -> u64 {
+    if path.is_file() {
+        return fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
+    }
+    let mut size: u64 = 0;
+    if let Ok(entries) = fs::read_dir(path) {
+        for entry in entries.flatten() {
+            size = size.saturating_add(total_size(&entry.path()));
+        }
+    }
+    size
 }

@@ -7,6 +7,8 @@ use anyhow::{Context, Result};
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 
+use super::metadata::total_size;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "kebab-case")]
 pub enum ModelKind {
@@ -142,6 +144,7 @@ impl ModelManager {
         manager.load_manifest()?;
         manager.cleanup_legacy_assets();
         manager.register_defaults();
+        manager.reconcile_on_disk_state();
         manager.save()?;
         Ok(manager)
     }
@@ -262,6 +265,110 @@ impl ModelManager {
             true
         });
     }
+
+    fn reconcile_on_disk_state(&mut self) {
+        let root = self.root.clone();
+        for asset in &mut self.assets {
+            if matches!(asset.status, ModelStatus::Installed) {
+                continue;
+            }
+
+            let path = asset.path(&root);
+            if !path.exists() {
+                continue;
+            }
+
+            let looks_installed = match asset.kind {
+                ModelKind::Vad => find_first_with_extension(&path, "onnx").is_some(),
+                ModelKind::WhisperCt2 => find_first_with_name(&path, "model.bin").is_some(),
+                ModelKind::WhisperOnnx | ModelKind::Parakeet => {
+                    find_tokens_file(&path).is_some()
+                        || find_first_with_extension(&path, "onnx").is_some()
+                }
+                _ => true,
+            };
+
+            if !looks_installed {
+                continue;
+            }
+
+            // Best-effort: set checksum from a representative file.
+            match asset.kind {
+                ModelKind::Vad => {
+                    if let Some(model) = find_first_with_extension(&path, "onnx") {
+                        let _ = asset.update_from_file(model);
+                    }
+                }
+                ModelKind::WhisperOnnx | ModelKind::Parakeet => {
+                    if let Some(tokens) = find_tokens_file(&path) {
+                        let _ = asset.update_from_file(tokens);
+                    }
+                }
+                ModelKind::WhisperCt2 => {
+                    if let Some(model) = find_first_with_name(&path, "model.bin") {
+                        let _ = asset.update_from_file(model);
+                    }
+                }
+                _ => {}
+            }
+
+            asset.set_size_bytes(total_size(&path));
+            asset.status = ModelStatus::Installed;
+        }
+    }
+}
+
+fn find_tokens_file(dir: &Path) -> Option<PathBuf> {
+    let default = dir.join("tokens.txt");
+    if default.exists() {
+        return Some(default);
+    }
+    let predicate = |entry: &fs::DirEntry| {
+        entry
+            .file_name()
+            .to_str()
+            .map(|name| name.contains("token"))
+            .unwrap_or(false)
+    };
+    find_first_matching(dir, &predicate)
+}
+
+fn find_first_with_extension(dir: &Path, extension: &str) -> Option<PathBuf> {
+    let predicate = |entry: &fs::DirEntry| {
+        entry
+            .file_name()
+            .to_str()
+            .map(|name| name.ends_with(extension))
+            .unwrap_or(false)
+    };
+    find_first_matching(dir, &predicate)
+}
+
+fn find_first_with_name(dir: &Path, filename: &str) -> Option<PathBuf> {
+    let direct = dir.join(filename);
+    if direct.exists() {
+        return Some(direct);
+    }
+    let predicate = |entry: &fs::DirEntry| entry.file_name().to_str() == Some(filename);
+    find_first_matching(dir, &predicate)
+}
+
+fn find_first_matching<F>(dir: &Path, predicate: &F) -> Option<PathBuf>
+where
+    F: Fn(&fs::DirEntry) -> bool,
+{
+    let entries = fs::read_dir(dir).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if let Some(found) = find_first_matching(&path, predicate) {
+                return Some(found);
+            }
+        } else if predicate(&entry) {
+            return Some(path);
+        }
+    }
+    None
 }
 
 fn resolve_model_dir() -> Result<PathBuf> {

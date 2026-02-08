@@ -22,7 +22,7 @@ Likely contributors (based on code reconnaissance):
 Goals
 - On cold start, the selected model is warmed automatically so that the first hotkey press (after warmup completes) behaves like all subsequent presses.
 - No noticeable UI delay at startup (warmup runs asynchronously).
-- Cross-platform behavior (Windows/macOS/Linux).
+- Linux-only behavior.
 - Robust HUD feedback when a hotkey is pressed during warmup, without changing the overlay’s lazy lifecycle.
 - Clear logs to debug warmup timing and failures.
 

@@ -41,15 +41,15 @@ cargo clippy                   # Lint Rust code
 ### Feature Flags
 
 The Rust backend uses feature flags for optional functionality:
-- `webrtc-apm` - WebRTC audio processing (default, requires MSYS2 on Windows)
-- `asr-sherpa` - Sherpa streaming ASR
+- `webrtc-apm` - WebRTC audio processing (default; builds bundled WebRTC APM via autotools)
+- `asr-sherpa` - Sherpa-based ASR backends (Parakeet + Whisper-ONNX via sherpa-rs)
+- `asr-ct2` - CTranslate2 Whisper backend
 - `vad-silero` - Silero voice activity detection (ONNX)
-- `enhanced-denoise` - Deep filter noise reduction
-- `windows-accessibility` - UI Automation for secure field detection
+- `real-audio` - Real microphone capture (CPAL)
 
-To bypass WebRTC on Windows before MSYS2 is configured:
+If your Linux build environment is missing the WebRTC APM toolchain (libtoolize/autoconf/automake), you can disable it:
 ```bash
-yarn tauri dev --no-default-features --features audio,hud,models,real-audio,asr-sherpa,vad-silero
+yarn tauri dev --no-default-features --features audio,hud,models,real-audio,asr-ct2,asr-sherpa,vad-silero
 ```
 
 ## Architecture
@@ -104,11 +104,11 @@ await listen<HudState>("hud-state", (event) => { ... });
 
 ## Model Assets
 
-Models stored in platform-specific app data directory (e.g., `%APPDATA%/OpenFlow/models` on Windows).
+Models stored in the XDG data directory (typically `~/.local/share/OpenFlow/OpenFlow/models`).
 
 Environment variables for model paths:
 - `SILERO_VAD_MODEL` - Silero VAD ONNX model
-- `SHERPA_ONLINE_MODEL` / `SHERPA_ONLINE_TOKENS` - Streaming ASR model
+
 
 ## Logging
 

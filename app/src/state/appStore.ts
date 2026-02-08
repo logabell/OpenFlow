@@ -97,16 +97,8 @@ export interface PerformanceMetrics {
   performanceMode: boolean;
 }
 
-function isLinuxRuntime(): boolean {
-  if (typeof navigator === "undefined") return false;
-  const platform = (navigator.platform ?? "").toLowerCase();
-  const ua = (navigator.userAgent ?? "").toLowerCase();
-  return platform.includes("linux") || ua.includes("linux");
-}
-
-export const DEFAULT_PUSH_TO_TALK_HOTKEY = isLinuxRuntime() ? "RightAlt" : "Ctrl+Space";
-export const DEFAULT_TOGGLE_TO_TALK_HOTKEY =
-  isLinuxRuntime() ? "RightAlt" : "Ctrl+Shift+Space";
+export const DEFAULT_PUSH_TO_TALK_HOTKEY = "RightAlt";
+export const DEFAULT_TOGGLE_TO_TALK_HOTKEY = "RightAlt";
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   hotkeyMode: "hold",
@@ -385,6 +377,10 @@ export interface Toast {
   title: string;
   description?: string;
   variant?: "info" | "success" | "warning" | "error";
+  action?: {
+    label: string;
+    onClick: () => void;
+  };
 }
 
 function formatModelName(name: string): string {

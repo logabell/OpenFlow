@@ -16,12 +16,12 @@ The names carry epoch metadata (`encoder-epoch-99-avg-1.onnx`, etc.). The backen
 
 ## Environment Configuration
 
-Set the following when launching the Tauri backend (shell examples assume PowerShell on Windows). Remember to enable the `asr-sherpa` feature when building (`cargo tauri dev --features asr-sherpa` or set it in the default feature list):
+Set the following when launching the Tauri backend (shell examples assume bash on Linux). Remember to enable the `asr-sherpa` feature when building (`cargo tauri dev --features asr-sherpa` or set it in the default feature list):
 
-```powershell
-$env:SHERPA_ONLINE_MODEL="C:\Models\sherpa-onnx-streaming-zipformer-en-2023-06-26"
+```bash
+export SHERPA_ONLINE_MODEL="$HOME/Models/sherpa-onnx-streaming-zipformer-en-2023-06-26"
 # Optional: override if tokens live outside the model dir
-# $env:SHERPA_ONLINE_TOKENS="C:\Models\sherpa-onnx-streaming-zipformer-en-2023-06-26\tokens.txt"
+# export SHERPA_ONLINE_TOKENS="$HOME/Models/sherpa-onnx-streaming-zipformer-en-2023-06-26/tokens.txt"
 ```
 
 `SHERPA_ONLINE_MODEL` must point to the extracted directory that contains the ONNX triplet and `tokens.txt`. If `SHERPA_ONLINE_TOKENS` is unset, the backend falls back to scanning the model directory for `tokens.txt` (or any `*token*.txt` file).

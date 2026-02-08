@@ -1,8 +1,3 @@
-#![cfg_attr(
-    all(not(debug_assertions), target_os = "windows"),
-    windows_subsystem = "windows"
-)]
-
 mod asr;
 mod audio;
 mod core;
@@ -80,21 +75,96 @@ async fn linux_permissions_status() -> tauri::Result<core::linux_setup::LinuxPer
 
 #[tauri::command]
 async fn linux_enable_permissions() -> tauri::Result<()> {
-    #[cfg(target_os = "linux")]
-    {
-        tokio::task::spawn_blocking(|| crate::core::linux_setup::enable_permissions_for_current_user())
-            .await
-            .map_err(|err| tauri::Error::from(anyhow!(err.to_string())))?
-            .map_err(tauri::Error::from)?;
-        Ok(())
+    tokio::task::spawn_blocking(|| crate::core::linux_setup::enable_permissions_for_current_user())
+        .await
+        .map_err(|err| tauri::Error::from(anyhow!(err.to_string())))?
+        .map_err(tauri::Error::from)?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn check_for_updates(
+    force: Option<bool>,
+) -> tauri::Result<core::updater::UpdateCheckResult> {
+    let force = force.unwrap_or(false);
+    tokio::task::spawn_blocking(move || crate::core::updater::check_for_updates(force))
+        .await
+        .map_err(|err| tauri::Error::from(anyhow!(err.to_string())))?
+        .map_err(tauri::Error::from)
+}
+
+#[tauri::command]
+async fn download_update(
+    app: AppHandle,
+    force: Option<bool>,
+) -> tauri::Result<core::updater::DownloadedUpdate> {
+    let force = force.unwrap_or(false);
+    tokio::task::spawn_blocking(move || {
+        crate::core::updater::download_update_with_progress(force, |progress| {
+            crate::core::events::emit_update_download_progress(&app, progress);
+        })
+    })
+        .await
+        .map_err(|err| tauri::Error::from(anyhow!(err.to_string())))?
+        .map_err(tauri::Error::from)
+}
+
+#[tauri::command]
+async fn apply_update(app: AppHandle, tarball_path: String) -> tauri::Result<()> {
+    tokio::task::spawn_blocking(move || {
+        crate::core::updater::apply_update_with_pkexec_with_progress(&tarball_path, |progress| {
+            crate::core::events::emit_update_apply_progress(&app, progress);
+        })
+    })
+        .await
+        .map_err(|err| tauri::Error::from(anyhow!(err.to_string())))?
+        .map_err(tauri::Error::from)
+}
+
+#[tauri::command]
+async fn quit_app(app: AppHandle) -> tauri::Result<()> {
+    app.exit(0);
+    Ok(())
+}
+
+#[tauri::command]
+async fn restart_app(app: AppHandle) -> tauri::Result<()> {
+    let candidates = [
+        "/opt/openflow/openflow",
+        "/usr/local/bin/openflow",
+        "openflow",
+    ];
+
+    let mut errors: Vec<String> = Vec::new();
+    for candidate in candidates {
+        if candidate.contains('/') && !std::path::Path::new(candidate).is_file() {
+            continue;
+        }
+
+        match std::process::Command::new(candidate)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            Ok(_) => {
+                app.exit(0);
+                return Ok(());
+            }
+            Err(err) => {
+                errors.push(format!("{candidate}: {err}"));
+            }
+        }
     }
 
-    #[cfg(not(target_os = "linux"))]
-    {
-        Err(tauri::Error::from(anyhow!(
-            "linux_enable_permissions is only supported on Linux"
-        )))
-    }
+    Err(tauri::Error::from(anyhow!(
+        "Failed to restart app. {}",
+        if errors.is_empty() {
+            "No restart candidates found.".to_string()
+        } else {
+            errors.join("; ")
+        }
+    )))
 }
 
 #[tauri::command]
@@ -206,7 +276,6 @@ fn main() {
 
     tauri::Builder::default()
         .manage(AppState::new())
-        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             get_settings,
             update_settings,
@@ -215,6 +284,11 @@ fn main() {
             unregister_hotkeys,
             linux_permissions_status,
             linux_enable_permissions,
+            check_for_updates,
+            download_update,
+            apply_update,
+            quit_app,
+            restart_app,
             begin_dictation,
             mark_dictation_processing,
             complete_dictation,

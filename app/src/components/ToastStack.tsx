@@ -46,13 +46,27 @@ const ToastStack = () => {
                   <p className="mt-1 text-xs text-muted">{toast.description}</p>
                 )}
               </div>
-              <button
-                type="button"
-                className="text-xs uppercase text-muted hover:text-fg"
-                onClick={() => dismissToast(toast.id)}
-              >
-                Close
-              </button>
+              <div className="flex items-center gap-2">
+                {toast.action && (
+                  <button
+                    type="button"
+                    className="text-xs font-semibold uppercase text-fg hover:opacity-90"
+                    onClick={() => {
+                      toast.action?.onClick();
+                      dismissToast(toast.id);
+                    }}
+                  >
+                    {toast.action.label}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="text-xs uppercase text-muted hover:text-fg"
+                  onClick={() => dismissToast(toast.id)}
+                >
+                  Close
+                </button>
+              </div>
             </div>
           </div>
         );

@@ -1,16 +1,15 @@
 use anyhow::Result;
 use regex::Regex;
 use std::{
-    env,
     fs::File,
     io::{Read, Write},
     path::{Path, PathBuf},
 };
 
-const DEPLOYMENT_TARGET_VAR: &str = "MACOSX_DEPLOYMENT_TARGET";
-
 fn out_dir() -> PathBuf {
-    std::env::var("OUT_DIR").expect("OUT_DIR environment var not set.").into()
+    std::env::var("OUT_DIR")
+        .expect("OUT_DIR environment var not set.")
+        .into()
 }
 
 #[cfg(not(feature = "bundled"))]
@@ -40,7 +39,7 @@ mod webrtc {
                 eprintln!("Couldn't find either header or lib files for {}.", LIB_NAME);
                 eprintln!("See the crate README for installation instructions, or use the 'bundled' feature to statically compile.");
                 bail!("Aborting compilation due to linker failure.");
-            },
+            }
         }
     }
 
@@ -90,11 +89,7 @@ mod webrtc {
     pub(super) fn build_if_necessary() -> Result<()> {
         let build_dir = copy_source_to_out_dir()?;
 
-        if cfg!(target_os = "macos") {
-            run_command(&build_dir, "glibtoolize", None)?;
-        } else {
-            run_command(&build_dir, "libtoolize", None)?;
-        }
+        run_command(&build_dir, "libtoolize", None)?;
 
         run_command(&build_dir, "aclocal", None)?;
         run_command(&build_dir, "automake", Some(&["--add-missing", "--copy"]))?;
@@ -117,70 +112,29 @@ mod webrtc {
         cmd: &str,
         args_opt: Option<&[&str]>,
     ) -> Result<()> {
-        use std::io::ErrorKind;
-
-        fn msys_shell() -> String {
-            std::env::var("MSYS2_SHELL").unwrap_or_else(|_| r"C:\msys64\usr\bin\bash.exe".into())
+        let mut command = std::process::Command::new(cmd);
+        command.current_dir(curr_dir);
+        if let Some(args) = args_opt {
+            command.args(args);
         }
-
-        fn run_direct<P: AsRef<Path>>(
-            curr_dir: P,
-            cmd: &str,
-            args_opt: Option<&[&str]>,
-        ) -> std::io::Result<std::process::Output> {
-            let mut command = std::process::Command::new(cmd);
-            command.current_dir(curr_dir);
-            if let Some(args) = args_opt {
-                command.args(args);
-            }
-            command.output()
-        }
-
-        match run_direct(&curr_dir, cmd, args_opt) {
-            Ok(output) => {
-                if !output.status.success() {
-                    anyhow::bail!(
-                        "Command '{}' failed with status {:?}",
-                        cmd,
-                        output.status.code()
-                    );
-                }
-                Ok(())
-            }
-            Err(e) if e.kind() == ErrorKind::NotFound && cfg!(target_os = "windows") => {
-                let shell = msys_shell();
-                let mut command = std::process::Command::new(shell);
-                command.current_dir(curr_dir);
-                command.arg("-lc");
-                command.arg("exec \"$@\"");
-                command.arg("--");
-                command.arg(cmd);
-                if let Some(args) = args_opt {
-                    command.args(args);
-                }
-                let output = command.output().map_err(|err| {
-                    anyhow!(
-                        "Error running '{}' via MSYS2 shell (set MSYS2_SHELL to override): {:?}",
-                        cmd,
-                        err
-                    )
-                })?;
-                if !output.status.success() {
-                    anyhow::bail!(
-                        "MSYS2 shell execution of '{}' failed with status {:?}",
-                        cmd,
-                        output.status.code()
-                    );
-                }
-                Ok(())
-            }
-            Err(e) => Err(anyhow!(
+        let output = command.output().map_err(|err| {
+            anyhow!(
                 "Error running command '{}' with args '{:?}' - {:?}",
                 cmd,
                 args_opt,
-                e
-            )),
+                err
+            )
+        })?;
+
+        if !output.status.success() {
+            anyhow::bail!(
+                "Command '{}' failed with status {:?}",
+                cmd,
+                output.status.code()
+            );
         }
+
+        Ok(())
     }
 }
 
@@ -208,25 +162,6 @@ fn main() -> Result<()> {
 
     let mut cc_build = cc::Build::new();
 
-    // set mac minimum version
-    if cfg!(target_os = "macos") {
-        let min_version = match env::var(DEPLOYMENT_TARGET_VAR) {
-            Ok(ver) => ver,
-            Err(_) => {
-                String::from(match std::env::var("CARGO_CFG_TARGET_ARCH").unwrap().as_str() {
-                    "x86_64" => "10.10", // Using what I found here https://github.com/webrtc-uwp/chromium-build/blob/master/config/mac/mac_sdk.gni#L17
-                    "aarch64" => "11.0", // Apple silicon started here.
-                    arch => panic!("unknown arch: {}", arch),
-                })
-            },
-        };
-
-        // `cc` doesn't try to pick up on this automatically, but `clang` needs it to
-        // generate a "correct" Objective-C symbol table which better matches XCode.
-        // See https://github.com/h4llow3En/mac-notification-sys/issues/45.
-        cc_build.flag(&format!("-mmacos-version-min={}", min_version));
-    }
-
     cc_build
         .cpp(true)
         .file("src/wrapper.cpp")
@@ -240,19 +175,13 @@ fn main() -> Result<()> {
     println!("cargo:rustc-link-search=native={}", webrtc_lib.display());
     println!("cargo:rustc-link-lib=static=webrtc_audio_processing_wrapper");
 
-    println!("cargo:rerun-if-env-changed={}", DEPLOYMENT_TARGET_VAR);
-
     if cfg!(feature = "bundled") {
         println!("cargo:rustc-link-lib=static=webrtc_audio_processing");
     } else {
         println!("cargo:rustc-link-lib=dylib=webrtc_audio_processing");
     }
 
-    if cfg!(target_os = "macos") {
-        println!("cargo:rustc-link-lib=dylib=c++");
-    } else {
-        println!("cargo:rustc-link-lib=dylib=stdc++");
-    }
+    println!("cargo:rustc-link-lib=dylib=stdc++");
 
     let binding_file = out_dir().join("bindings.rs");
     bindgen::Builder::default()

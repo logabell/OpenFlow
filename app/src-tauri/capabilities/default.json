@@ -26,7 +26,6 @@
         "wayland-warning"
       ]
     },
-    "global-shortcut:default",
     "core:tray:default",
     "core:menu:default",
     "core:window:default"

@@ -506,12 +506,14 @@ impl SpeechPipelineInner {
 
         let sample_rate = self.audio.sample_rate();
         let samples = self.asr.take_samples();
-        let pending = samples.len();
         #[cfg(debug_assertions)]
-        logs::push_log(format!(
-            "Finalizing dictation (samples={} rate={}Hz)",
-            pending, sample_rate
-        ));
+        {
+            let pending = samples.len();
+            logs::push_log(format!(
+                "Finalizing dictation (samples={} rate={}Hz)",
+                pending, sample_rate
+            ));
+        }
 
         let trim_range = self.compute_trim_range(sample_rate, samples.len());
         let (trim_start, trim_end) = match trim_range {
@@ -592,32 +594,29 @@ impl SpeechPipelineInner {
                     );
                 }
                 Err(error) => {
-                #[cfg(target_os = "linux")]
-                let linux = Some(crate::core::linux_setup::permissions_status());
-                #[cfg(not(target_os = "linux"))]
-                let linux = None;
+                    let linux = Some(crate::core::linux_setup::permissions_status());
 
-                match error {
-                    crate::output::OutputInjectionError::Paste(paste) => {
-                        let payload = events::PasteFailedPayload {
-                            step: paste.step.as_str().to_string(),
-                            message: paste.message,
-                            shortcut: shortcut.to_string(),
-                            transcript_on_clipboard: paste.transcript_on_clipboard,
-                            linux,
-                        };
+                    match error {
+                        crate::output::OutputInjectionError::Paste(paste) => {
+                            let payload = events::PasteFailedPayload {
+                                step: paste.step.as_str().to_string(),
+                                message: paste.message,
+                                shortcut: shortcut.to_string(),
+                                transcript_on_clipboard: paste.transcript_on_clipboard,
+                                linux,
+                            };
 
-                        if matches!(paste.kind, crate::output::PasteFailureKind::Unconfirmed) {
-                            events::emit_paste_unconfirmed(&self.app, payload);
-                        } else {
-                            events::emit_paste_failed(&self.app, payload);
+                            if matches!(paste.kind, crate::output::PasteFailureKind::Unconfirmed) {
+                                events::emit_paste_unconfirmed(&self.app, payload);
+                            } else {
+                                events::emit_paste_failed(&self.app, payload);
+                            }
                         }
-                    }
                     crate::output::OutputInjectionError::Copy(message) => {
                         events::emit_paste_failed(
                             &self.app,
                             events::PasteFailedPayload {
-                                step: "wl-copy".to_string(),
+                                step: "clipboard".to_string(),
                                 message,
                                 shortcut: "unknown".to_string(),
                                 transcript_on_clipboard: false,

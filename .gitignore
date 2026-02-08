@@ -5,3 +5,5 @@ target
 *.log
 app/node_modules
 app/dist
+release/
+dist/

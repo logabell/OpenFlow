@@ -173,23 +173,13 @@ impl AppState {
     }
 
     pub fn start_session(&self, app: &AppHandle) {
-        let show_overlay = {
-            #[cfg(target_os = "linux")]
-            {
-                if is_wayland_session() {
-                    self.settings_manager()
-                        .read_frontend()
-                        .map(|settings| settings.show_overlay_on_wayland)
-                        .unwrap_or(false)
-                } else {
-                    true
-                }
-            }
-
-            #[cfg(not(target_os = "linux"))]
-            {
-                true
-            }
+        let show_overlay = if is_wayland_session() {
+            self.settings_manager()
+                .read_frontend()
+                .map(|settings| settings.show_overlay_on_wayland)
+                .unwrap_or(false)
+        } else {
+            true
         };
 
         self.start_session_with_overlay(app, show_overlay);
@@ -689,7 +679,6 @@ fn parse_paste_shortcut(value: &str) -> PasteShortcut {
     }
 }
 
-#[cfg(target_os = "linux")]
 fn is_wayland_session() -> bool {
     let xdg_session_type = std::env::var("XDG_SESSION_TYPE").unwrap_or_default();
     let wayland_display = std::env::var("WAYLAND_DISPLAY").unwrap_or_default();

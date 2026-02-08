@@ -10,28 +10,18 @@
     "beforeBuildCommand": "yarn build"
   },
   "bundle": {
-    "active": true,
-    "targets": ["appimage", "deb"],
+    "active": false,
     "icon": [
       "icons/32x32.png",
       "icons/64x64.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
-      "icons/icon.png",
-      "icons/icon.ico",
-      "icons/icon.icns"
+      "icons/icon.png"
     ],
     "category": "Utility",
     "shortDescription": "OpenFlow local dictation",
     "longDescription": "OpenFlow is a local-first speech-to-text dictation assistant. Captures audio, transcribes on-device, and pastes polished text into active fields.",
-    "linux": {
-      "appimage": {
-        "bundleMediaFramework": true
-      },
-      "deb": {
-        "depends": ["libasound2"]
-      }
-    }
+    "linux": {}
   },
   "app": {
     "trayIcon": {

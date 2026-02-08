@@ -22,6 +22,9 @@ pub const EVENT_PASTE_SUCCEEDED: &str = "paste-succeeded";
 pub const EVENT_AUDIO_DIAGNOSTICS: &str = "audio-diagnostics";
 pub const EVENT_VAD_DIAGNOSTICS: &str = "vad-diagnostics";
 
+pub const EVENT_UPDATE_DOWNLOAD_PROGRESS: &str = "update-download-progress";
+pub const EVENT_UPDATE_APPLY_PROGRESS: &str = "update-apply-progress";
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PasteFailedPayload {
@@ -130,4 +133,18 @@ pub fn emit_metrics(app: &AppHandle, metrics: &EngineMetrics) {
 
 pub fn emit_model_status<T: Serialize + Clone>(app: &AppHandle, payload: T) {
     let _ = app.emit(EVENT_MODEL_STATUS, payload);
+}
+
+pub fn emit_update_download_progress(
+    app: &AppHandle,
+    payload: crate::core::updater::UpdateDownloadProgress,
+) {
+    let _ = app.emit(EVENT_UPDATE_DOWNLOAD_PROGRESS, payload);
+}
+
+pub fn emit_update_apply_progress(
+    app: &AppHandle,
+    payload: crate::core::updater::UpdateApplyProgress,
+) {
+    let _ = app.emit(EVENT_UPDATE_APPLY_PROGRESS, payload);
 }

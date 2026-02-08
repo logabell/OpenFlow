@@ -8,13 +8,6 @@ use crate::core::events;
 use crate::core::settings::DEFAULT_PUSH_TO_TALK_HOTKEY;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
-enum HotkeyBackend {
-    Evdev,
-    TauriGlobalShortcut,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HotkeyState {
     Pressed,
     Released,
@@ -22,7 +15,6 @@ enum HotkeyState {
 
 /// Tracks the currently registered hotkey so we can unregister it when changing.
 static CURRENT_HOTKEY: RwLock<Option<String>> = RwLock::new(None);
-static CURRENT_BACKEND: RwLock<Option<HotkeyBackend>> = RwLock::new(None);
 
 /// Register the hotkey based on current settings.
 /// This will unregister any previously registered hotkey first.
@@ -45,48 +37,16 @@ pub async fn register_shortcut(app: &AppHandle, shortcut: &str) -> tauri::Result
         shortcut, session_type
     );
 
-    #[cfg(target_os = "linux")]
-    {
-        register_evdev_shortcut(app, shortcut)?;
-        set_current_state(shortcut, HotkeyBackend::Evdev);
-        let _ = app.emit("hotkey-backend", "evdev");
-        if let Some(state) = app.try_state::<AppState>() {
-            state.set_hud_state(app, "idle");
-        } else {
-            events::emit_hud_state(app, "idle");
-        }
-        app.emit("hotkey-registered", shortcut)?;
-        return Ok(());
+    register_evdev_shortcut(app, shortcut)?;
+    set_current_hotkey(shortcut);
+    let _ = app.emit("hotkey-backend", "evdev");
+    if let Some(state) = app.try_state::<AppState>() {
+        state.set_hud_state(app, "idle");
+    } else {
+        events::emit_hud_state(app, "idle");
     }
-
-    #[cfg(not(target_os = "linux"))]
-    {
-        register_tauri_shortcut(app, shortcut)?;
-        set_current_state(shortcut, HotkeyBackend::TauriGlobalShortcut);
-        let _ = app.emit("hotkey-backend", "tauri");
-        if let Some(state) = app.try_state::<AppState>() {
-            state.set_hud_state(app, "idle");
-        } else {
-            events::emit_hud_state(app, "idle");
-        }
-        app.emit("hotkey-registered", shortcut)?;
-        return Ok(());
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-fn register_tauri_shortcut(app: &AppHandle, shortcut: &str) -> tauri::Result<()> {
-    use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
-
-    app.global_shortcut()
-        .on_shortcut(shortcut, move |app, _shortcut, event| {
-            let state = match event.state {
-                ShortcutState::Pressed => HotkeyState::Pressed,
-                ShortcutState::Released => HotkeyState::Released,
-            };
-            handle_hotkey_state(app, state);
-        })
-        .map_err(|error| tauri::Error::from(anyhow::anyhow!(error.to_string())))
+    app.emit("hotkey-registered", shortcut)?;
+    Ok(())
 }
 
 fn handle_hotkey_state(app: &AppHandle, state: HotkeyState) {
@@ -128,66 +88,23 @@ fn handle_hotkey_state(app: &AppHandle, state: HotkeyState) {
 }
 
 /// Unregister the currently registered hotkey (if any).
-async fn unregister_current(app: &AppHandle) -> tauri::Result<()> {
+async fn unregister_current(_app: &AppHandle) -> tauri::Result<()> {
     let current = { CURRENT_HOTKEY.read().clone() };
-    let backend = { *CURRENT_BACKEND.read() };
-
-    #[cfg(target_os = "linux")]
-    {
-        let _ = (&app, &current);
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        if matches!(backend, Some(HotkeyBackend::Evdev)) {
-            stop_evdev_listener();
-        }
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    {
-        use tauri_plugin_global_shortcut::GlobalShortcutExt;
-
-        if matches!(backend, Some(HotkeyBackend::TauriGlobalShortcut)) {
-            if let Some(ref shortcut) = current {
-                if let Err(error) = app
-                    .global_shortcut()
-                    .unregister(shortcut.as_str())
-                    .map_err(|err| anyhow::anyhow!(err.to_string()))
-                {
-                    warn!("failed to unregister existing hotkey {}: {error:?}", shortcut);
-                }
-            }
-
-            // Also try to unregister the default hotkeys in case they're lingering.
-            let _ = app.global_shortcut().unregister(DEFAULT_PUSH_TO_TALK_HOTKEY);
-            let _ = app
-                .global_shortcut()
-                .unregister(crate::core::settings::DEFAULT_TOGGLE_TO_TALK_HOTKEY);
-        }
+    if current.is_some() {
+        stop_evdev_listener();
     }
 
     {
         let mut guard = CURRENT_HOTKEY.write();
         *guard = None;
     }
-    {
-        let mut guard = CURRENT_BACKEND.write();
-        *guard = None;
-    }
 
     Ok(())
 }
 
-fn set_current_state(shortcut: &str, backend: HotkeyBackend) {
-    {
-        let mut current = CURRENT_HOTKEY.write();
-        *current = Some(shortcut.to_string());
-    }
-    {
-        let mut current = CURRENT_BACKEND.write();
-        *current = Some(backend);
-    }
+fn set_current_hotkey(shortcut: &str) {
+    let mut current = CURRENT_HOTKEY.write();
+    *current = Some(shortcut.to_string());
 }
 
 /// Get the current hotkey from settings based on the active mode.
@@ -231,7 +148,6 @@ pub async fn reregister(app: &AppHandle) -> tauri::Result<()> {
 // Linux evdev backend
 // -------------------------------------------------------------------------------------------------
 
-#[cfg(target_os = "linux")]
 mod linux_evdev {
     use super::{handle_hotkey_state, HotkeyState};
     use crate::output::uinput::VIRTUAL_KEYBOARD_NAME;
@@ -787,7 +703,6 @@ mod linux_evdev {
     }
 }
 
-#[cfg(target_os = "linux")]
 fn register_evdev_shortcut(app: &AppHandle, shortcut: &str) -> tauri::Result<()> {
     match linux_evdev::start(app, shortcut) {
         Ok(()) => Ok(()),
@@ -804,7 +719,6 @@ fn register_evdev_shortcut(app: &AppHandle, shortcut: &str) -> tauri::Result<()>
     }
 }
 
-#[cfg(target_os = "linux")]
 fn stop_evdev_listener() {
     linux_evdev::stop_from_parent();
 }

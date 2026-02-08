@@ -8,110 +8,103 @@ pub struct LinuxPermissionsStatus {
     pub xdg_runtime_dir_available: bool,
     pub evdev_readable: bool,
     pub uinput_writable: bool,
+    pub clipboard_backend: String,
     pub wl_copy_available: bool,
     pub wl_paste_available: bool,
+    pub xclip_available: bool,
     pub pkexec_available: bool,
     pub setfacl_available: bool,
     pub details: Vec<String>,
 }
 
 pub fn permissions_status() -> LinuxPermissionsStatus {
-    #[cfg(not(target_os = "linux"))]
-    {
-        return LinuxPermissionsStatus {
-            supported: false,
-            wayland_session: false,
-            xdg_runtime_dir_available: false,
-            evdev_readable: false,
-            uinput_writable: false,
-            wl_copy_available: false,
-            wl_paste_available: false,
-            pkexec_available: false,
-            setfacl_available: false,
-            details: vec!["Linux permissions check is only available on Linux".to_string()],
+    let mut details = Vec::new();
+
+    let xdg_session_type = std::env::var("XDG_SESSION_TYPE").unwrap_or_default();
+    let wayland_display = std::env::var("WAYLAND_DISPLAY").unwrap_or_default();
+    let wayland_session = xdg_session_type == "wayland" || !wayland_display.is_empty();
+    if !wayland_session {
+        let session = if xdg_session_type.is_empty() {
+            "unset".to_string()
+        } else {
+            xdg_session_type.clone()
         };
+        details.push(format!(
+            "Not running under Wayland (XDG_SESSION_TYPE={session})"
+        ));
     }
 
-    #[cfg(target_os = "linux")]
-    {
-        let mut details = Vec::new();
+    let xdg_runtime_dir_available = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(|value| std::path::Path::new(&value).is_dir())
+        .unwrap_or(false);
 
-        let xdg_session_type = std::env::var("XDG_SESSION_TYPE").unwrap_or_default();
-        let wayland_display = std::env::var("WAYLAND_DISPLAY").unwrap_or_default();
-        let wayland_session = xdg_session_type == "wayland" || !wayland_display.is_empty();
-        if !wayland_session {
-            let session = if xdg_session_type.is_empty() {
-                "unset".to_string()
-            } else {
-                xdg_session_type.clone()
-            };
-            details.push(format!(
-                "Not running under Wayland (XDG_SESSION_TYPE={session})"
-            ));
+    let evdev_readable = match check_evdev_keyboard_access() {
+        Ok(()) => true,
+        Err(message) => {
+            details.push(message);
+            false
         }
+    };
 
-        let xdg_runtime_dir_available = std::env::var_os("XDG_RUNTIME_DIR")
-            .map(|value| std::path::Path::new(&value).is_dir())
-            .unwrap_or(false);
+    let uinput_writable = match check_uinput_access() {
+        Ok(()) => true,
+        Err(message) => {
+            details.push(message);
+            if let Some(hint) = diagnose_uinput_acl_hint() {
+                details.push(hint);
+            }
+            false
+        }
+    };
+
+    let wl_copy_available = binary_in_path("wl-copy");
+
+    let wl_paste_available = binary_in_path("wl-paste");
+
+    let xclip_available = binary_in_path("xclip");
+
+    let clipboard_backend = if wayland_session { "wayland" } else { "x11" };
+
+    if wayland_session {
         if !xdg_runtime_dir_available {
             details.push("Missing XDG_RUNTIME_DIR (Wayland clipboard may not work)".to_string());
         }
-
-        let evdev_readable = match check_evdev_keyboard_access() {
-            Ok(()) => true,
-            Err(message) => {
-                details.push(message);
-                false
-            }
-        };
-
-        let uinput_writable = match check_uinput_access() {
-            Ok(()) => true,
-            Err(message) => {
-                details.push(message);
-                if let Some(hint) = diagnose_uinput_acl_hint() {
-                    details.push(hint);
-                }
-                false
-            }
-        };
-
-        let wl_copy_available = binary_in_path("wl-copy");
         if !wl_copy_available {
             details.push("Missing wl-copy (install wl-clipboard)".to_string());
         }
-
-        let wl_paste_available = binary_in_path("wl-paste");
         if !wl_paste_available {
             details.push("Missing wl-paste (install wl-clipboard)".to_string());
         }
+    } else if !xclip_available {
+        details.push("Missing xclip (install xclip for X11 clipboard)".to_string());
+    }
 
-        let pkexec_available = binary_in_path("pkexec");
-        if !pkexec_available {
-            details.push("Missing pkexec (install polkit)".to_string());
-        }
+    let pkexec_available = binary_in_path("pkexec");
+    if !pkexec_available {
+        details.push("Missing pkexec (install polkit)".to_string());
+    }
 
-        let setfacl_available = binary_in_path("setfacl");
-        if !setfacl_available {
-            details.push("Missing setfacl (install acl)".to_string());
-        }
+    let setfacl_available = binary_in_path("setfacl");
+    if !setfacl_available {
+        details.push("Missing setfacl (install acl)".to_string());
+    }
 
-        LinuxPermissionsStatus {
-            supported: true,
-            wayland_session,
-            xdg_runtime_dir_available,
-            evdev_readable,
-            uinput_writable,
-            wl_copy_available,
-            wl_paste_available,
-            pkexec_available,
-            setfacl_available,
-            details,
-        }
+    LinuxPermissionsStatus {
+        supported: true,
+        wayland_session,
+        xdg_runtime_dir_available,
+        evdev_readable,
+        uinput_writable,
+        clipboard_backend: clipboard_backend.to_string(),
+        wl_copy_available,
+        wl_paste_available,
+        xclip_available,
+        pkexec_available,
+        setfacl_available,
+        details,
     }
 }
 
-#[cfg(target_os = "linux")]
 fn diagnose_uinput_acl_hint() -> Option<String> {
     use std::process::Command;
 
@@ -147,7 +140,6 @@ fn diagnose_uinput_acl_hint() -> Option<String> {
     None
 }
 
-#[cfg(target_os = "linux")]
 pub fn enable_permissions_for_current_user() -> anyhow::Result<()> {
     let user = std::env::var("USER").unwrap_or_default();
     if user.is_empty() {
@@ -233,7 +225,6 @@ fi
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
 fn check_evdev_keyboard_access() -> Result<(), String> {
     let dir =
         std::fs::read_dir("/dev/input").map_err(|err| format!("/dev/input not readable: {err}"))?;
@@ -279,7 +270,6 @@ fn check_evdev_keyboard_access() -> Result<(), String> {
     Err("No keyboard devices found under /dev/input".to_string())
 }
 
-#[cfg(target_os = "linux")]
 fn check_uinput_access() -> Result<(), String> {
     use std::fs::OpenOptions;
 

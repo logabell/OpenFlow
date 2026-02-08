@@ -6,7 +6,6 @@ use crate::output::logs;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
-#[cfg(target_os = "linux")]
 use crate::output::uinput;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,7 +37,7 @@ pub enum PasteFailureKind {
 impl PasteFailureStep {
     pub fn as_str(&self) -> &'static str {
         match self {
-            PasteFailureStep::ClipboardWrite => "wl-copy",
+            PasteFailureStep::ClipboardWrite => "clipboard",
             PasteFailureStep::KeyInject => "uinput",
         }
     }
@@ -70,7 +69,7 @@ impl std::fmt::Display for OutputInjectionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             OutputInjectionError::Paste(err) => write!(f, "{err}"),
-            OutputInjectionError::Copy(message) => write!(f, "wl-copy: {message}"),
+            OutputInjectionError::Copy(message) => write!(f, "clipboard: {message}"),
         }
     }
 }
@@ -145,83 +144,75 @@ impl OutputInjector {
 }
 
 fn paste_text(text: &str, shortcut: PasteShortcut) -> Result<(), PasteFailure> {
-    #[cfg(target_os = "linux")]
-    {
-        use std::thread::sleep;
-        use std::time::Duration;
+    use std::thread::sleep;
+    use std::time::Duration;
 
-        let previous = snapshot_clipboard().ok().flatten();
+    let previous = snapshot_clipboard().ok().flatten();
 
-        // Ensure transcript is available on the Wayland clipboard before we inject the paste.
-        set_clipboard_text(text).map_err(|err| PasteFailure {
-            step: PasteFailureStep::ClipboardWrite,
-            kind: PasteFailureKind::Failed,
-            message: err.to_string(),
-            transcript_on_clipboard: false,
-        })?;
+    // Ensure transcript is available on the clipboard before we inject the paste.
+    set_clipboard_text(text).map_err(|err| PasteFailure {
+        step: PasteFailureStep::ClipboardWrite,
+        kind: PasteFailureKind::Failed,
+        message: err.to_string(),
+        transcript_on_clipboard: false,
+    })?;
 
-        if !wait_for_clipboard_equals(text.as_bytes(), Duration::from_millis(250)) {
-            return Err(PasteFailure {
-                step: PasteFailureStep::ClipboardWrite,
-                kind: PasteFailureKind::Unconfirmed,
-                message: "Transcript not observed on clipboard before paste; transcript left on clipboard.".to_string(),
-                transcript_on_clipboard: true,
-            });
-        }
-
-        if let Err(error) = uinput::send_paste(shortcut) {
-            // Keep transcript on the clipboard so the user can paste manually.
-            let _ = set_clipboard_text(text);
-            return Err(PasteFailure {
-                step: PasteFailureStep::KeyInject,
-                kind: PasteFailureKind::Failed,
-                message: error.to_string(),
-                transcript_on_clipboard: true,
-            });
-        }
-
-        // Hold the transcript as the clipboard selection long enough for the target app
-        // to request it. Clipboard managers may probe immediately; we must not restore early.
-        sleep(Duration::from_millis(650));
-
-        let Some(previous) = previous else {
-            return Err(PasteFailure {
-                step: PasteFailureStep::ClipboardWrite,
-                kind: PasteFailureKind::Unconfirmed,
-                message:
-                    "Previous clipboard could not be snapshotted; transcript left on clipboard."
-                        .to_string(),
-                transcript_on_clipboard: true,
-            });
-        };
-
-        // If the clipboard changed while we were holding the transcript (e.g. user copied
-        // something), do not overwrite it.
-        if !clipboard_equals(text.as_bytes()) {
-            return Err(PasteFailure {
-                step: PasteFailureStep::ClipboardWrite,
-                kind: PasteFailureKind::Unconfirmed,
-                message: "Clipboard changed during paste window; not restoring previous clipboard."
-                    .to_string(),
-                transcript_on_clipboard: false,
-            });
-        }
-
-        restore_clipboard(previous).map_err(|err| PasteFailure {
+    if !wait_for_clipboard_equals(text.as_bytes(), Duration::from_millis(250)) {
+        return Err(PasteFailure {
             step: PasteFailureStep::ClipboardWrite,
             kind: PasteFailureKind::Unconfirmed,
-            message: format!("Failed to restore clipboard: {err}"),
+            message:
+                "Transcript not observed on clipboard before paste; transcript left on clipboard."
+                    .to_string(),
             transcript_on_clipboard: true,
-        })?;
-
-        Ok(())
+        });
     }
 
-    #[cfg(not(target_os = "linux"))]
-    {
-        warn!("Paste requested on unsupported platform: {}", text);
-        Ok(())
+    if let Err(error) = uinput::send_paste(shortcut) {
+        // Keep transcript on the clipboard so the user can paste manually.
+        let _ = set_clipboard_text(text);
+        return Err(PasteFailure {
+            step: PasteFailureStep::KeyInject,
+            kind: PasteFailureKind::Failed,
+            message: error.to_string(),
+            transcript_on_clipboard: true,
+        });
     }
+
+    // Hold the transcript as the clipboard selection long enough for the target app
+    // to request it. Clipboard managers may probe immediately; we must not restore early.
+    sleep(Duration::from_millis(650));
+
+    let Some(previous) = previous else {
+        return Err(PasteFailure {
+            step: PasteFailureStep::ClipboardWrite,
+            kind: PasteFailureKind::Unconfirmed,
+            message: "Previous clipboard could not be snapshotted; transcript left on clipboard."
+                .to_string(),
+            transcript_on_clipboard: true,
+        });
+    };
+
+    // If the clipboard changed while we were holding the transcript (e.g. user copied
+    // something), do not overwrite it.
+    if !clipboard_equals(text.as_bytes()) {
+        return Err(PasteFailure {
+            step: PasteFailureStep::ClipboardWrite,
+            kind: PasteFailureKind::Unconfirmed,
+            message: "Clipboard changed during paste window; not restoring previous clipboard."
+                .to_string(),
+            transcript_on_clipboard: false,
+        });
+    }
+
+    restore_clipboard(previous).map_err(|err| PasteFailure {
+        step: PasteFailureStep::ClipboardWrite,
+        kind: PasteFailureKind::Unconfirmed,
+        message: format!("Failed to restore clipboard: {err}"),
+        transcript_on_clipboard: true,
+    })?;
+
+    Ok(())
 }
 
 impl PasteFailureKind {
@@ -233,21 +224,95 @@ impl PasteFailureKind {
     }
 }
 
-#[cfg(target_os = "linux")]
 #[derive(Debug, Clone)]
 struct ClipboardSnapshot {
     mime: String,
     data: Vec<u8>,
 }
 
-#[cfg(target_os = "linux")]
 fn snapshot_clipboard() -> anyhow::Result<Option<ClipboardSnapshot>> {
-    let types = list_clipboard_types()?;
+    match clipboard_backend() {
+        ClipboardBackend::Wayland => snapshot_clipboard_wayland(),
+        ClipboardBackend::X11 => snapshot_clipboard_x11(),
+    }
+}
+
+fn set_clipboard_text(text: &str) -> anyhow::Result<()> {
+    match clipboard_backend() {
+        ClipboardBackend::Wayland => set_clipboard_text_wayland(text),
+        ClipboardBackend::X11 => set_clipboard_text_x11(text),
+    }
+}
+
+fn restore_clipboard(snapshot: ClipboardSnapshot) -> anyhow::Result<()> {
+    match clipboard_backend() {
+        ClipboardBackend::Wayland => restore_clipboard_wayland(snapshot),
+        ClipboardBackend::X11 => restore_clipboard_x11(snapshot),
+    }
+}
+
+fn clipboard_equals(expected: &[u8]) -> bool {
+    match clipboard_backend() {
+        ClipboardBackend::Wayland => clipboard_equals_wayland(expected),
+        ClipboardBackend::X11 => clipboard_equals_x11(expected),
+    }
+}
+
+fn wait_for_clipboard_equals(expected: &[u8], timeout: std::time::Duration) -> bool {
+    let start = std::time::Instant::now();
+    loop {
+        if clipboard_equals(expected) {
+            return true;
+        }
+        if start.elapsed() >= timeout {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClipboardBackend {
+    Wayland,
+    X11,
+}
+
+fn clipboard_backend() -> ClipboardBackend {
+    let xdg_session_type = std::env::var("XDG_SESSION_TYPE").unwrap_or_default();
+    let wayland_display = std::env::var("WAYLAND_DISPLAY").unwrap_or_default();
+    let wayland_session = xdg_session_type == "wayland" || !wayland_display.is_empty();
+
+    if wayland_session {
+        ClipboardBackend::Wayland
+    } else {
+        ClipboardBackend::X11
+    }
+}
+
+fn ensure_wayland_clipboard_ready() -> anyhow::Result<()> {
+    let xdg_runtime_dir_available = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(|value| std::path::Path::new(&value).is_dir())
+        .unwrap_or(false);
+    if !xdg_runtime_dir_available {
+        anyhow::bail!("Missing XDG_RUNTIME_DIR (Wayland clipboard may not work)");
+    }
+    if !binary_in_path("wl-copy") {
+        anyhow::bail!("wl-copy not found (install wl-clipboard)");
+    }
+    if !binary_in_path("wl-paste") {
+        anyhow::bail!("wl-paste not found (install wl-clipboard)");
+    }
+    Ok(())
+}
+
+fn snapshot_clipboard_wayland() -> anyhow::Result<Option<ClipboardSnapshot>> {
+    ensure_wayland_clipboard_ready()?;
+    let types = list_clipboard_types_wayland()?;
     if types.is_empty() {
         return Ok(None);
     }
 
-    let chosen = choose_preferred_type(&types).unwrap_or_else(|| types[0].as_str());
+    let chosen = choose_preferred_type_wayland(&types).unwrap_or_else(|| types[0].as_str());
     let output = Command::new(resolve_binary("wl-paste"))
         .args(["--type", chosen, "--no-newline"])
         .output()?;
@@ -267,8 +332,32 @@ fn snapshot_clipboard() -> anyhow::Result<Option<ClipboardSnapshot>> {
     }))
 }
 
-#[cfg(target_os = "linux")]
-fn list_clipboard_types() -> anyhow::Result<Vec<String>> {
+fn snapshot_clipboard_x11() -> anyhow::Result<Option<ClipboardSnapshot>> {
+    if !binary_in_path("xclip") {
+        return Ok(None);
+    }
+
+    let output = Command::new(resolve_binary("xclip"))
+        .args(["-selection", "clipboard", "-out"])
+        .output()?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    // Avoid unbounded memory usage.
+    const MAX_BYTES: usize = 8 * 1024 * 1024;
+    if output.stdout.len() > MAX_BYTES {
+        return Ok(None);
+    }
+
+    Ok(Some(ClipboardSnapshot {
+        mime: "text/plain".to_string(),
+        data: output.stdout,
+    }))
+}
+
+fn list_clipboard_types_wayland() -> anyhow::Result<Vec<String>> {
+    ensure_wayland_clipboard_ready()?;
     let output = Command::new(resolve_binary("wl-paste"))
         .args(["--list-types"])
         .output()?;
@@ -285,8 +374,7 @@ fn list_clipboard_types() -> anyhow::Result<Vec<String>> {
         .collect())
 }
 
-#[cfg(target_os = "linux")]
-fn choose_preferred_type(types: &[String]) -> Option<&str> {
+fn choose_preferred_type_wayland(types: &[String]) -> Option<&str> {
     for candidate in ["text/plain;charset=utf-8", "text/plain"] {
         if types.iter().any(|t| t == candidate) {
             return Some(candidate);
@@ -299,8 +387,8 @@ fn choose_preferred_type(types: &[String]) -> Option<&str> {
         .map(|t| t.as_str())
 }
 
-#[cfg(target_os = "linux")]
-fn set_clipboard_text(text: &str) -> anyhow::Result<()> {
+fn set_clipboard_text_wayland(text: &str) -> anyhow::Result<()> {
+    ensure_wayland_clipboard_ready()?;
     let mut child = Command::new(resolve_binary("wl-copy"))
         .stdin(Stdio::piped())
         .spawn()?;
@@ -314,13 +402,27 @@ fn set_clipboard_text(text: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[cfg(not(target_os = "linux"))]
-fn set_clipboard_text(_text: &str) -> anyhow::Result<()> {
+fn set_clipboard_text_x11(text: &str) -> anyhow::Result<()> {
+    if !binary_in_path("xclip") {
+        anyhow::bail!("xclip not found (install xclip)");
+    }
+
+    let mut child = Command::new(resolve_binary("xclip"))
+        .args(["-selection", "clipboard", "-in"])
+        .stdin(Stdio::piped())
+        .spawn()?;
+    if let Some(stdin) = child.stdin.as_mut() {
+        stdin.write_all(text.as_bytes())?;
+    }
+    let status = child.wait()?;
+    if !status.success() {
+        anyhow::bail!("xclip failed with status {status}");
+    }
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
-fn restore_clipboard(snapshot: ClipboardSnapshot) -> anyhow::Result<()> {
+fn restore_clipboard_wayland(snapshot: ClipboardSnapshot) -> anyhow::Result<()> {
+    ensure_wayland_clipboard_ready()?;
     let mut child = Command::new(resolve_binary("wl-copy"))
         .args(["--type", snapshot.mime.as_str()])
         .stdin(Stdio::piped())
@@ -335,8 +437,29 @@ fn restore_clipboard(snapshot: ClipboardSnapshot) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
-fn clipboard_equals(expected: &[u8]) -> bool {
+fn restore_clipboard_x11(snapshot: ClipboardSnapshot) -> anyhow::Result<()> {
+    if !binary_in_path("xclip") {
+        anyhow::bail!("xclip not found (install xclip)");
+    }
+
+    let mut child = Command::new(resolve_binary("xclip"))
+        .args(["-selection", "clipboard", "-in"])
+        .stdin(Stdio::piped())
+        .spawn()?;
+    if let Some(stdin) = child.stdin.as_mut() {
+        stdin.write_all(&snapshot.data)?;
+    }
+    let status = child.wait()?;
+    if !status.success() {
+        anyhow::bail!("xclip failed with status {status}");
+    }
+    Ok(())
+}
+
+fn clipboard_equals_wayland(expected: &[u8]) -> bool {
+    if ensure_wayland_clipboard_ready().is_err() {
+        return false;
+    }
     Command::new(resolve_binary("wl-paste"))
         .args(["--no-newline"])
         .output()
@@ -346,26 +469,46 @@ fn clipboard_equals(expected: &[u8]) -> bool {
         .unwrap_or(false)
 }
 
-#[cfg(target_os = "linux")]
-fn wait_for_clipboard_equals(expected: &[u8], timeout: std::time::Duration) -> bool {
-    let start = std::time::Instant::now();
-    loop {
-        if clipboard_equals(expected) {
-            return true;
-        }
-        if start.elapsed() >= timeout {
-            return false;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
+fn clipboard_equals_x11(expected: &[u8]) -> bool {
+    if !binary_in_path("xclip") {
+        return false;
     }
+
+    Command::new(resolve_binary("xclip"))
+        .args(["-selection", "clipboard", "-out"])
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .map(|out| out.stdout == expected)
+        .unwrap_or(false)
 }
 
-fn resolve_binary(binary: &str) -> std::ffi::OsString {
+fn binary_in_path(binary: &str) -> bool {
+    find_binary(binary).is_some()
+}
+
+fn find_binary(binary: &str) -> Option<std::path::PathBuf> {
+    if let Some(path) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path) {
+            let full = dir.join(binary);
+            if full.is_file() {
+                return Some(full);
+            }
+        }
+    }
+
     for dir in ["/usr/bin", "/usr/local/bin", "/bin"] {
         let candidate = std::path::Path::new(dir).join(binary);
         if candidate.is_file() {
-            return candidate.into_os_string();
+            return Some(candidate);
         }
     }
-    std::ffi::OsString::from(binary)
+
+    None
+}
+
+fn resolve_binary(binary: &str) -> std::ffi::OsString {
+    find_binary(binary)
+        .map(|path| path.into_os_string())
+        .unwrap_or_else(|| std::ffi::OsString::from(binary))
 }

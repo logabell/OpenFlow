@@ -71,18 +71,9 @@ impl AsrSelection {
     }
 }
 
-// Defaults are intentionally OS-specific.
-// - Linux uses single-key hotkeys (evdev backend handles these reliably).
-// - Non-Linux uses chord-style defaults that work well with global shortcut backends.
-#[cfg(target_os = "linux")]
+// Linux-only defaults.
 pub const DEFAULT_PUSH_TO_TALK_HOTKEY: &str = "RightAlt";
-#[cfg(target_os = "linux")]
 pub const DEFAULT_TOGGLE_TO_TALK_HOTKEY: &str = "RightAlt";
-
-#[cfg(not(target_os = "linux"))]
-pub const DEFAULT_PUSH_TO_TALK_HOTKEY: &str = "Ctrl+Space";
-#[cfg(not(target_os = "linux"))]
-pub const DEFAULT_TOGGLE_TO_TALK_HOTKEY: &str = "Ctrl+Shift+Space";
 
 impl Default for FrontendSettings {
     fn default() -> Self {
@@ -245,16 +236,14 @@ fn migrate_frontend_settings(settings: &mut FrontendSettings) {
 
     // Linux: migrate legacy defaults to the newer single-key default.
     // Only rewrite when the user is still on the old shipped defaults.
-    if cfg!(target_os = "linux") {
-        const LEGACY_LINUX_PUSH_TO_TALK: &str = "Alt+Shift+A";
-        const LEGACY_LINUX_TOGGLE_TO_TALK: &str = "Alt+Shift+S";
+    const LEGACY_LINUX_PUSH_TO_TALK: &str = "Alt+Shift+A";
+    const LEGACY_LINUX_TOGGLE_TO_TALK: &str = "Alt+Shift+S";
 
-        if settings.push_to_talk_hotkey == LEGACY_LINUX_PUSH_TO_TALK {
-            settings.push_to_talk_hotkey = DEFAULT_PUSH_TO_TALK_HOTKEY.into();
-        }
-        if settings.toggle_to_talk_hotkey == LEGACY_LINUX_TOGGLE_TO_TALK {
-            settings.toggle_to_talk_hotkey = DEFAULT_TOGGLE_TO_TALK_HOTKEY.into();
-        }
+    if settings.push_to_talk_hotkey == LEGACY_LINUX_PUSH_TO_TALK {
+        settings.push_to_talk_hotkey = DEFAULT_PUSH_TO_TALK_HOTKEY.into();
+    }
+    if settings.toggle_to_talk_hotkey == LEGACY_LINUX_TOGGLE_TO_TALK {
+        settings.toggle_to_talk_hotkey = DEFAULT_TOGGLE_TO_TALK_HOTKEY.into();
     }
 
     if let Some(legacy) = settings.legacy_asr_backend.take() {

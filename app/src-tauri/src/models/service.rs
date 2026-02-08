@@ -17,6 +17,8 @@ use super::{
     ModelAsset, ModelKind, ModelManager, ModelStatus,
 };
 
+use super::metadata::total_size;
+
 #[derive(Debug, Clone)]
 pub struct ModelDownloadJob {
     pub asset_name: String,
@@ -378,17 +380,4 @@ where
         }
     }
     None
-}
-
-fn total_size(path: &Path) -> u64 {
-    if path.is_file() {
-        return fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
-    }
-    let mut size = 0;
-    if let Ok(entries) = fs::read_dir(path) {
-        for entry in entries.flatten() {
-            size += total_size(&entry.path());
-        }
-    }
-    size
 }

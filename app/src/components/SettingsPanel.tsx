@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { useAppStore } from "../state/appStore";
 import { AccordionSection, Badge, Button, Card, Disclosure, Select } from "../ui/primitives";
 import type {
@@ -21,11 +22,39 @@ type LinuxPermissionsStatus = {
   xdgRuntimeDirAvailable: boolean;
   evdevReadable: boolean;
   uinputWritable: boolean;
+  clipboardBackend: string;
   wlCopyAvailable: boolean;
   wlPasteAvailable: boolean;
+  xclipAvailable: boolean;
   pkexecAvailable: boolean;
   setfaclAvailable: boolean;
   details: string[];
+};
+
+type UpdateCheckResult = {
+  currentVersion: string;
+  latestVersion: string;
+  updateAvailable: boolean;
+  tarballUrl?: string | null;
+  sha256Url?: string | null;
+  checkedAtUnix: number;
+  fromCache: boolean;
+};
+
+type DownloadedUpdate = {
+  version: string;
+  tarballPath: string;
+};
+
+type UpdateDownloadProgress = {
+  stage: string;
+  downloadedBytes: number;
+  totalBytes?: number | null;
+};
+
+type UpdateApplyProgress = {
+  stage: string;
+  message?: string | null;
 };
 
 const PRESET_SINGLE_KEYS = [
@@ -122,7 +151,20 @@ const SettingsPanel = () => {
     useState<LinuxPermissionsStatus | null>(null);
   const [linuxSetupBusy, setLinuxSetupBusy] = useState(false);
   const [linuxSetupMessage, setLinuxSetupMessage] = useState<string | null>(null);
-  const [sections, setSections] = useState({ general: true, models: true, linux: false });
+  const [updateInfo, setUpdateInfo] = useState<UpdateCheckResult | null>(null);
+  const [downloadedUpdate, setDownloadedUpdate] = useState<DownloadedUpdate | null>(null);
+  const [updateProgress, setUpdateProgress] = useState<UpdateDownloadProgress | null>(null);
+  const [updateApplyProgress, setUpdateApplyProgress] =
+    useState<UpdateApplyProgress | null>(null);
+  const [updateBusy, setUpdateBusy] = useState(false);
+  const [updateMessage, setUpdateMessage] = useState<string | null>(null);
+  const [updateApplied, setUpdateApplied] = useState(false);
+  const [sections, setSections] = useState({
+    general: true,
+    models: true,
+    updates: false,
+    linux: false,
+  });
 
   const refreshLinuxPermissions = useCallback(async () => {
     try {
@@ -142,6 +184,31 @@ const SettingsPanel = () => {
   useEffect(() => {
     void refreshAudioDevices();
   }, [refreshAudioDevices]);
+
+  useEffect(() => {
+    const disposers: Array<() => void> = [];
+    listen<UpdateDownloadProgress>("update-download-progress", (event) => {
+      if (!event.payload) return;
+      setUpdateProgress(event.payload);
+    })
+      .then((dispose) => disposers.push(dispose))
+      .catch((error) => {
+        console.debug("Failed to listen for update download progress", error);
+      });
+
+    listen<UpdateApplyProgress>("update-apply-progress", (event) => {
+      if (!event.payload) return;
+      setUpdateApplyProgress(event.payload);
+    })
+      .then((dispose) => disposers.push(dispose))
+      .catch((error) => {
+        console.debug("Failed to listen for update apply progress", error);
+      });
+
+    return () => {
+      disposers.forEach((dispose) => dispose());
+    };
+  }, []);
 
   const lastLoadedSettingsRef = useRef<AppSettings | null>(null);
 
@@ -209,6 +276,90 @@ const SettingsPanel = () => {
     }
   };
 
+  const handleCheckForUpdates = async (force: boolean) => {
+    setUpdateBusy(true);
+    setUpdateMessage(null);
+    setUpdateApplied(false);
+    setDownloadedUpdate(null);
+    setUpdateProgress(null);
+    setUpdateApplyProgress(null);
+    try {
+      const result = await invoke<UpdateCheckResult>("check_for_updates", {
+        force,
+      });
+      setUpdateInfo(result);
+      if (result.updateAvailable) {
+        setUpdateMessage(`Update available: ${result.latestVersion}`);
+      } else {
+        setUpdateMessage("You're up to date.");
+      }
+    } catch (error) {
+      setUpdateMessage(`Update check failed: ${error}`);
+    } finally {
+      setUpdateBusy(false);
+    }
+  };
+
+  const handleDownloadUpdate = async () => {
+    setUpdateBusy(true);
+    setUpdateMessage(null);
+    setUpdateApplied(false);
+    setUpdateProgress(null);
+    setUpdateApplyProgress(null);
+    try {
+      const downloaded = await invoke<DownloadedUpdate>("download_update", {
+        force: false,
+      });
+      if (!downloaded.tarballPath) {
+        setDownloadedUpdate(null);
+        setUpdateMessage("No update to download.");
+      } else {
+        setDownloadedUpdate(downloaded);
+        setUpdateMessage(`Update downloaded (${downloaded.version}). Ready to apply.`);
+      }
+    } catch (error) {
+      setUpdateMessage(`Update download failed: ${error}`);
+    } finally {
+      setUpdateBusy(false);
+    }
+  };
+
+  const handleApplyUpdate = async () => {
+    if (!downloadedUpdate?.tarballPath) {
+      return;
+    }
+
+    setUpdateBusy(true);
+    setUpdateMessage(null);
+    setUpdateProgress(null);
+    setUpdateApplyProgress({ stage: "auth", message: "Waiting for admin approval" });
+    try {
+      await invoke("apply_update", { tarballPath: downloadedUpdate.tarballPath });
+      setUpdateApplied(true);
+      setUpdateMessage("Update applied. Restart OpenFlow to use the new version.");
+    } catch (error) {
+      setUpdateMessage(`Update apply failed: ${error}`);
+    } finally {
+      setUpdateBusy(false);
+    }
+  };
+
+  const handleQuitForUpdate = async () => {
+    try {
+      await invoke("quit_app");
+    } catch (error) {
+      console.error("Failed to quit app", error);
+    }
+  };
+
+  const handleRestartForUpdate = async () => {
+    try {
+      await invoke("restart_app");
+    } catch (error) {
+      setUpdateMessage(`Restart failed: ${error}`);
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-6">
       <div className="relative flex max-h-[90vh] w-[720px] max-w-full flex-col overflow-hidden rounded-vibe border border-border bg-surface p-6 text-fg shadow-[0_6px_0_hsl(var(--shadow)/0.25),0_30px_90px_hsl(var(--shadow)/0.35)]">
@@ -250,6 +401,29 @@ const SettingsPanel = () => {
                 onInstallAsset={(name) => void installModelAsset(name)}
                 onUninstallAsset={(name) => void uninstallModelAsset(name)}
                 onApplyImmediate={applyImmediateSettings}
+              />
+            </AccordionSection>
+
+            <AccordionSection
+              title="Updates"
+              description="Check GitHub Releases and update the /opt install."
+              open={sections.updates}
+              onToggle={() => setSections((s) => ({ ...s, updates: !s.updates }))}
+            >
+              <UpdatesSection
+                linuxStatus={linuxPermissions}
+                info={updateInfo}
+                downloaded={downloadedUpdate}
+                progress={updateProgress}
+                applyProgress={updateApplyProgress}
+                busy={updateBusy}
+                message={updateMessage}
+                applied={updateApplied}
+                onCheck={(force) => void handleCheckForUpdates(force)}
+                onDownload={() => void handleDownloadUpdate()}
+                onApply={() => void handleApplyUpdate()}
+                onRestart={() => void handleRestartForUpdate()}
+                onQuit={() => void handleQuitForUpdate()}
               />
             </AccordionSection>
 
@@ -1324,9 +1498,13 @@ const LinuxSetupSection = ({
   }
 
   const permissionsConfigured = status.evdevReadable && status.uinputWritable;
-  const clipboardToolsReady = status.wlCopyAvailable && status.wlPasteAvailable;
-  const envReady = status.waylandSession && status.xdgRuntimeDirAvailable;
-  const pasteReady = permissionsConfigured && clipboardToolsReady && envReady;
+  const clipboardToolsReady =
+    status.clipboardBackend === "wayland"
+      ? status.wlCopyAvailable && status.wlPasteAvailable && status.xdgRuntimeDirAvailable
+      : status.clipboardBackend === "x11"
+        ? status.xclipAvailable
+        : false;
+  const pasteReady = permissionsConfigured && clipboardToolsReady;
 
   return (
     <section>
@@ -1370,15 +1548,15 @@ const LinuxSetupSection = ({
             </span>
           </div>
           <div className="flex items-center justify-between">
-            <span className="text-muted">Clipboard tools (wl-clipboard)</span>
+            <span className="text-muted">
+              Clipboard tools ({status.clipboardBackend === "x11" ? "xclip" : "wl-clipboard"})
+            </span>
             <span
               className={
-                status.wlCopyAvailable && status.wlPasteAvailable
-                  ? "text-good"
-                  : "text-warn"
+                clipboardToolsReady ? "text-good" : "text-warn"
               }
             >
-              {status.wlCopyAvailable && status.wlPasteAvailable ? "ready" : "missing"}
+              {clipboardToolsReady ? "ready" : "missing"}
             </span>
           </div>
           <div className="flex items-center justify-between">
@@ -1478,9 +1656,175 @@ const LinuxSetupSection = ({
 
         {!pasteReady && (
           <p className="text-xs text-muted">
-            Paste to active app requires Wayland, wl-clipboard, and /dev/uinput access.
+            Paste to active app requires clipboard tooling and /dev/uinput access.
           </p>
         )}
+      </Card>
+    </section>
+  );
+};
+
+const UpdatesSection = ({
+  linuxStatus,
+  info,
+  downloaded,
+  progress,
+  applyProgress,
+  busy,
+  message,
+  applied,
+  onCheck,
+  onDownload,
+  onApply,
+  onRestart,
+  onQuit,
+}: {
+  linuxStatus: LinuxPermissionsStatus | null;
+  info: UpdateCheckResult | null;
+  downloaded: DownloadedUpdate | null;
+  progress: UpdateDownloadProgress | null;
+  applyProgress: UpdateApplyProgress | null;
+  busy: boolean;
+  message: string | null;
+  applied: boolean;
+  onCheck: (force: boolean) => void;
+  onDownload: () => void;
+  onApply: () => void;
+  onRestart: () => void;
+  onQuit: () => void;
+}) => {
+  const checkedAt = info?.checkedAtUnix
+    ? new Date(info.checkedAtUnix * 1000)
+    : null;
+  const checkedAtText = checkedAt ? checkedAt.toLocaleString() : "—";
+
+  const updateAvailable = Boolean(info?.updateAvailable);
+  const hasDownload = Boolean(downloaded?.tarballPath);
+  const pkexecReady = Boolean(linuxStatus?.pkexecAvailable);
+
+  return (
+    <section>
+      <h3 className="text-lg font-medium text-fg">Updates</h3>
+      <Card className="mt-3 space-y-3 p-4">
+        <div className="grid gap-2 text-sm">
+          <div className="flex items-center justify-between">
+            <span className="text-muted">Current</span>
+            <span className="font-mono text-fg">{info?.currentVersion ?? "—"}</span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-muted">Latest</span>
+            <span className="font-mono text-fg">{info?.latestVersion ?? "—"}</span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-muted">Last checked</span>
+            <span className="text-xs text-muted">
+              {checkedAtText}
+              {info?.fromCache ? " (cached)" : ""}
+            </span>
+          </div>
+        </div>
+
+        {message && (
+          <div className="rounded-vibe border border-info/30 bg-info/10 p-3 text-xs text-fg">
+            {message}
+          </div>
+        )}
+
+        <div className="flex flex-wrap gap-2">
+          <Button
+            variant="secondary"
+            onClick={() => onCheck(true)}
+            disabled={busy}
+          >
+            {busy ? "Checking…" : "Check for updates"}
+          </Button>
+
+          {updateAvailable && !hasDownload && (
+            <Button
+              variant="primary"
+              onClick={onDownload}
+              disabled={busy}
+            >
+              {busy ? "Downloading…" : "Download update"}
+            </Button>
+          )}
+
+          {updateAvailable && hasDownload && !applied && (
+            <Button
+              variant="primary"
+              onClick={onApply}
+              disabled={busy || !pkexecReady}
+              title={!pkexecReady ? "pkexec not available" : "Requires admin approval"}
+            >
+              Apply (admin)
+            </Button>
+          )}
+
+          {applied && (
+            <>
+              <Button variant="primary" onClick={onRestart} disabled={busy}>
+                Restart
+              </Button>
+              <Button variant="secondary" onClick={onQuit} disabled={busy}>
+                Quit
+              </Button>
+            </>
+          )}
+        </div>
+
+        {busy && progress && (
+          <div className="space-y-2 rounded-vibe border border-border bg-surface2 p-3">
+            <div className="flex items-center justify-between text-xs text-muted">
+              <span>
+                Downloading {progress.stage === "sha256" ? "checksum" : "tarball"}
+              </span>
+              <span className="font-mono">
+                {formatBytes(progress.downloadedBytes)}
+                {progress.totalBytes ? ` / ${formatBytes(progress.totalBytes)}` : ""}
+              </span>
+            </div>
+            {progress.totalBytes ? (
+              <div className="h-2 w-full overflow-hidden rounded-vibe border border-border bg-surface">
+                <div
+                  className="h-full bg-info"
+                  style={{
+                    width: `${Math.min(100, Math.max(0, Math.round((progress.downloadedBytes / Math.max(1, progress.totalBytes)) * 100)))}%`,
+                  }}
+                />
+              </div>
+            ) : (
+              <div className="h-2 w-full overflow-hidden rounded-vibe border border-border bg-surface">
+                <div className="h-full w-1/3 animate-pulse bg-info/70" />
+              </div>
+            )}
+          </div>
+        )}
+
+        {busy && applyProgress && (
+          <div className="space-y-1 rounded-vibe border border-border bg-surface2 p-3 text-xs">
+            <div className="flex items-center justify-between">
+              <span className="text-muted">Applying update</span>
+              <span className="font-mono text-fg">{applyProgress.stage}</span>
+            </div>
+            {applyProgress.message && <div className="text-muted">{applyProgress.message}</div>}
+          </div>
+        )}
+
+        {updateAvailable && hasDownload && (
+          <p className="text-xs text-muted">
+            Downloaded update stored at: <span className="font-mono">{downloaded?.tarballPath}</span>
+          </p>
+        )}
+
+        {!pkexecReady && updateAvailable && hasDownload && !applied && (
+          <p className="text-xs text-warn">
+            Install polkit (pkexec) to apply updates.
+          </p>
+        )}
+
+        <p className="text-xs text-muted">
+          Applying an update replaces files under <span className="font-mono">/opt/openflow</span>.
+        </p>
       </Card>
     </section>
   );

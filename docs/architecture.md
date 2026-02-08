@@ -1,80 +1,41 @@
-# OpenFlow — Architecture Blueprint
+# OpenFlow - Architecture (Linux-only)
 
-## 1. Vision Recap
+OpenFlow is a local-first, privacy-focused dictation assistant for Linux. It listens for a global hotkey, captures microphone audio, transcribes on-device, applies lightweight cleanup, and pastes into the currently focused field without clobbering the user's clipboard.
 
-OpenFlow is a local-first, Windows-focused dictation assistant that captures speech via a global hotkey gesture, performs on-device transcription and cleanup, and pastes polished text into the active field without disturbing the clipboard. Privacy, speed, and simplicity guide every design choice.
+## Components
 
-## 2. High-Level System Layout
+- Frontend: React + TypeScript (Vite) under `app/src/`
+- Backend: Rust (Tauri 2) under `app/src-tauri/src/`
 
-```
-┌─────────────┐      ┌──────────┐      ┌─────────────┐
-│   Frontend   │◄────►│  IPC /   │◄────►│   Backend    │
-│ (React/Vite) │      │ Commands │      │  (Rust)      │
-└─────▲────────┘      └────▲─────┘      └────▲────────┘
-      │                    │                │
-      │HUD / Settings      │Event Emitters  │Audio/ASR/VAD
-      │                    │                │LLM / Output
-```
+## Runtime Data Flow
 
-- **Frontend** renders the HUD, tray-driven Settings, and diagnostic overlays. It consumes events from the backend (HUD state, warnings) and invokes tauri commands for configuration updates.
-- **Backend** orchestrates audio capture, voice activity detection, ASR, Tier-1 cleanup, and output injection. Modules are organized under `src-tauri/src/` according to PRD responsibilities.
-- **IPC Layer**: Tauri commands and events provide the bridge between React state and Rust services.
+1) Audio capture (CPAL) -> preprocessing (WebRTC APM when enabled)
+2) Voice activity detection (energy heuristic or Silero when enabled)
+3) ASR transcription (Parakeet via sherpa-rs by default; Whisper backends optional)
+4) Tier-1 deterministic text cleanup
+5) Output injection:
+   - put transcript on clipboard (Wayland: wl-clipboard; X11: xclip)
+   - inject paste chord via `/dev/uinput`
+   - restore previous clipboard contents
 
-## 3. Module Responsibilities
+## Linux Integration Notes
 
-| Module | Path | Responsibilities |
-| --- | --- | --- |
-| Core | `src-tauri/src/core` | Settings persistence, hotkey registration, speech pipeline coordination, metrics & performance fallback triggers. |
-| Audio | `src-tauri/src/audio` | CPAL capture (16 kHz mono), device enumeration/selection, preprocessing chain (WebRTC APM stub, optional `dtln-rs`), frame streaming. |
-| VAD | `src-tauri/src/vad` | Energy-heuristic VAD with optional Silero ONNX backend (`vad-silero` feature), user-tunable sensitivity, and adaptive hangover management. |
-| ASR | `src-tauri/src/asr` | Streaming Zipformer (sherpa-rs) and Whisper batch mode integration with simulated fallbacks when models unavailable. |
-| LLM | `src-tauri/src/llm` | Tier-1 deterministic cleanup (regex + punctuation). |
-| Output | `src-tauri/src/output` | Clipboard-preserving paste, secure-field blocking, UIA fallback, tray lifecycle. |
-| Models | `src-tauri/src/models` | Model inventory, manifest persistence, downloader worker + Tauri commands/events, checksum validation, DirectML/CoreML/CUDA compatibility hints. |
+- Global hotkeys: read `/dev/input/event*` (evdev)
+- Paste injection: virtual keyboard via `/dev/uinput`
+- Permissions: one-click setup uses `pkexec` to add the user to the `input` group and install a udev rule for `/dev/uinput`
+- Display servers: designed for compositor-agnostic hotkeys/injection (evdev + uinput). Clipboard integration uses wl-clipboard on Wayland and xclip on X11.
 
-## 4. Data Flow
+## Storage
 
-1. **Capture**: Audio pipeline collects frames from the selected device (auto-switch or pinned).  
-2. **Preprocess**: Always-on WebRTC APM; optional `dtln-rs` for enhanced denoise. CPU telemetry drives automatic warning-only mode when overloaded.  
-3. **Gate**: Energy heuristic segments speech; when `vad-silero` + `SILERO_VAD_MODEL` are present, Silero ONNX replaces the heuristic. Hangover defaults to 400 ms (sensitivity-selectable in Settings) and automatically shortens to ~200 ms during performance degradation warnings.  
-4. **Transcribe**: Streaming mode uses Zipformer via `sherpa-rs` when `SHERPA_ONLINE_MODEL/TOKENS` are configured; otherwise a simulator returns deterministic text. Whisper remains the fallback accuracy mode.  
-5. **Cleanup**: Tier-1 deterministic pass (default `Fast`).  
-6. **Output**: Injection queue preserves clipboard, blocks secure/password fields, emits HUD states.  
-7. **Feedback**: Metrics pipeline samples real CPU usage (via `sysinfo`) and tracks latency. If latency>2s for 2 consecutive utterances and CPU>75%, backend emits `performance-warning`, temporarily relaxes VAD hangover, and reverts once metrics recover.  
+- Settings: XDG config dir (typically `~/.config/OpenFlow/OpenFlow/config.json`)
+- Models: XDG data dir (typically `~/.local/share/OpenFlow/OpenFlow/models/`)
 
-## 5. Platform Notes
+## Key Backend Modules
 
-- **Windows**: Primary target; uses WASAPI, DirectML, UI Automation, SendInput. Optional feature flags enable secure-field detection (`windows-accessibility`), clipboard-preserving paste, and real audio capture. Deliver NSIS/MSIX installers; manual updater with Ed25519 signature validation.  
-- **macOS / Linux**: Build and run expected without regressions; limited QA initially. Core modules designed for swapping CoreAudio/PulseAudio backends later.  
-- **Tray UX**: Single tray icon exposing Settings, Logs, About, Check for Updates, Quit.  
-- **HUD**: Transparent click-through window anchored bottom-center. Orange border in toggle mode; special states for performance warnings and secure field blocks.
-
-## 6. Model Lifecycle
-
-- Stored under `%APPDATA%/OpenFlow/models` (Windows).  
-- On-demand downloads for large assets; progress surfaced in Settings + tray ring.  
-- Checksum validation (SHA-256).  
-- Assets tracked per `ModelKind` with statuses (NotInstalled, Downloading, Installed, Error).  
-- Feature gated models expect env vars: `SILERO_VAD_MODEL` for VAD, `SHERPA_ONLINE_MODEL`/`SHERPA_ONLINE_TOKENS` for streaming ASR.  
-
-## 7. Settings & Persistence
-
-- JSON config at `%APPDATA%/OpenFlow/config.json`.  
-- Fields: hotkey mode, HUD theme, language/auto-detect, autoclean mode, debug transcript toggle.  
-- `debug_transcripts` auto-expires 24 h after activation and surfaces banner in UI (implementation pending).  
-- Advanced options include `auto_update`, `debug_transcripts`, and future enterprise overrides.
-
-## 8. Future Integration Hooks
-
-- Plug-in API deferred post v1.0 but internal module boundaries respect future extension.  
-- Rust `SpeechPipeline` designed for instrumentation (latency histograms, CPU sampling).  
-- Cloud BYO support (OpenAI-compatible endpoints) to be wired into `llm` module with exponential backoff.
-
-## 9. Open Integration Tasks (tracked in `agents.md`)
-
-- Bundle and load real ONNX models (Silero, Zipformer) behind feature flags; remove simulated fallbacks once assets ship.  
-- Confirm clipboard-preserving paste + secure-field detection across privilege boundaries and add integration tests.  
-- Wire updater command to GitHub Releases with Ed25519 verification.  
-- Build pipeline scripts for WebRTC APM & ONNX Runtime/artifact downloads.  
-- Populate onboarding flow and ensure auto language detection toggles per model support.  
-- Expand log viewer (filtering/export) and shrink diagnostics hooks once automated smoke tests cover latency/perf regressions.  
+- `core/`: app state, settings persistence, hotkeys, pipeline orchestration
+- `audio/`: audio capture and preprocessing
+- `vad/`: VAD backend selection and tuning
+- `asr/`: ASR engine selection and warmup
+- `llm/`: Tier-1 cleanup (deterministic)
+- `models/`: model catalog + download manager + checksum validation
+- `output/`: clipboard-preserving paste + tray
