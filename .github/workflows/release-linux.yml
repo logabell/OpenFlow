@@ -12,6 +12,8 @@ permissions:
 jobs:
   build-and-upload:
     runs-on: ubuntu-24.04
+    env:
+      ORT_PREFER_DYNAMIC_LINK: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@v4

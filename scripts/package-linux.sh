@@ -32,7 +32,7 @@ echo "Building frontend..."
 (cd "$APP_DIR" && yarn build)
 
 echo "Building backend (release)..."
-(cd "$TAURI_DIR" && cargo build --release)
+(cd "$TAURI_DIR" && ORT_PREFER_DYNAMIC_LINK=1 cargo build --release)
 
 BIN="$TAURI_DIR/target/release/openflow"
 LIB_DIR_SRC="$TAURI_DIR/target/release"
@@ -67,9 +67,6 @@ chmod 0755 "$STAGE/openflow/openflow"
 required_libs=(
   "libsherpa-onnx-c-api.so"
   "libsherpa-onnx-cxx-api.so"
-)
-
-optional_libs=(
   "libonnxruntime.so"
 )
 
@@ -81,11 +78,7 @@ for lib in "${required_libs[@]}"; do
   cp "$LIB_DIR_SRC/$lib" "$STAGE/openflow/lib/$lib"
 done
 
-for lib in "${optional_libs[@]}"; do
-  if [ -f "$LIB_DIR_SRC/$lib" ]; then
-    cp "$LIB_DIR_SRC/$lib" "$STAGE/openflow/lib/$lib"
-  fi
-done
+
 
 cp "$APP_DIR/src-tauri/icons/32x32.png" "$STAGE/openflow/icons/32x32.png"
 cp "$APP_DIR/src-tauri/icons/64x64.png" "$STAGE/openflow/icons/64x64.png"
