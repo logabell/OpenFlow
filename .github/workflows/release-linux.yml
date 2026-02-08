@@ -41,11 +41,13 @@ jobs:
             libayatana-appindicator3-dev \
             libasound2-dev \
             libsentencepiece-dev \
+            libprotobuf-dev \
             patchelf
 
       - name: Verify pkg-config
         run: |
           pkg-config --variable pc_path pkg-config
+          pkg-config --modversion protobuf-lite
           pkg-config --modversion sentencepiece
           pkg-config --libs sentencepiece
           pkg-config --cflags sentencepiece
