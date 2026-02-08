@@ -10,7 +10,58 @@ permissions:
   contents: write
 
 jobs:
-  build-and-upload:
+  build-webkit40:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: yarn
+          cache-dependency-path: app/yarn.lock
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system dependencies (WebKitGTK 4.0)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            pkg-config \
+            clang libclang-dev \
+            autoconf automake libtool \
+            libgtk-3-dev \
+            libwebkit2gtk-4.0-dev \
+            librsvg2-dev \
+            libayatana-appindicator3-dev \
+            libasound2-dev \
+            patchelf
+
+      - name: Install JS dependencies
+        working-directory: app
+        run: yarn install --frozen-lockfile
+
+      - name: Build release tarball (WebKitGTK 4.0)
+        run: |
+          chmod +x scripts/package-linux.sh
+          scripts/package-linux.sh dist-webkit40
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-webkit40
+          if-no-files-found: error
+          path: |
+            dist-webkit40/openflow-linux-x86_64-webkit40.tar.gz
+            dist-webkit40/openflow-linux-x86_64-webkit40.tar.gz.sha256
+            dist-webkit40/latest.linux-x86_64-webkit40.json
+            dist-webkit40/asset.linux-x86_64-webkit40.json
+
+  build-webkit41:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
@@ -26,7 +77,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install system dependencies
+      - name: Install system dependencies (WebKitGTK 4.1)
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -45,17 +96,99 @@ jobs:
         working-directory: app
         run: yarn install --frozen-lockfile
 
-      - name: Build release tarball
+      - name: Build release tarball (WebKitGTK 4.1)
         run: |
           chmod +x scripts/package-linux.sh
-          scripts/package-linux.sh dist
+          scripts/package-linux.sh dist-webkit41
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-webkit41
+          if-no-files-found: error
+          path: |
+            dist-webkit41/openflow-linux-x86_64-webkit41.tar.gz
+            dist-webkit41/openflow-linux-x86_64-webkit41.tar.gz.sha256
+            dist-webkit41/latest.linux-x86_64-webkit41.json
+            dist-webkit41/asset.linux-x86_64-webkit41.json
+
+  release:
+    runs-on: ubuntu-24.04
+    needs:
+      - build-webkit40
+      - build-webkit41
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download build artifact (WebKitGTK 4.0)
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-webkit40
+          path: dist-webkit40
+
+      - name: Download build artifact (WebKitGTK 4.1)
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-webkit41
+          path: dist-webkit41
+
+      - name: Assemble release assets
+        run: |
+          rm -rf dist
+          mkdir -p dist
+
+          cp dist-webkit40/openflow-linux-x86_64-webkit40.tar.gz dist/
+          cp dist-webkit40/openflow-linux-x86_64-webkit40.tar.gz.sha256 dist/
+          cp dist-webkit41/openflow-linux-x86_64-webkit41.tar.gz dist/
+          cp dist-webkit41/openflow-linux-x86_64-webkit41.tar.gz.sha256 dist/
+
+          cp install.sh dist/install.sh
+          chmod 0755 dist/install.sh
+
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          def read_sha256(path: Path) -> str:
+            text = path.read_text(encoding='utf-8').strip().split()
+            if not text:
+              raise RuntimeError(f"empty sha256 file: {path}")
+            return text[0]
+
+          version = os.environ.get('GITHUB_REF_NAME') or ''
+          if not version.startswith('v'):
+            # Fallback for workflow_dispatch.
+            version = 'v' + version.lstrip('v') if version else 'v0.0.0'
+
+          assets = {}
+          for track in ['40', '41']:
+            key = f"linux-x86_64-webkit{track}"
+            tarball = f"openflow-linux-x86_64-webkit{track}.tar.gz"
+            sha_file = f"{tarball}.sha256"
+            sha = read_sha256(Path('dist') / sha_file)
+            assets[key] = {
+              'tarball': tarball,
+              'sha256File': sha_file,
+              'sha256': sha,
+            }
+
+          manifest = {
+            'version': version,
+            'assets': assets,
+          }
+          Path('dist/latest.json').write_text(json.dumps(manifest, indent=2) + "\n", encoding='utf-8')
+          PY
 
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/openflow-linux-x86_64.tar.gz
-            dist/openflow-linux-x86_64.tar.gz.sha256
+            dist/openflow-linux-x86_64-webkit40.tar.gz
+            dist/openflow-linux-x86_64-webkit40.tar.gz.sha256
+            dist/openflow-linux-x86_64-webkit41.tar.gz
+            dist/openflow-linux-x86_64-webkit41.tar.gz.sha256
             dist/latest.json
             dist/install.sh
           generate_release_notes: true

@@ -10,15 +10,19 @@ UDEV_RULE_FILE="/etc/udev/rules.d/99-openflow-uinput.rules"
 STATE_DIR="/var/lib/openflow"
 STATE_FILE="$STATE_DIR/install-state.json"
 
-ASSET_TARBALL="openflow-linux-x86_64.tar.gz"
-ASSET_SHA256="$ASSET_TARBALL.sha256"
+WEBKIT_MODE="auto" # auto | 40 | 41
+WEBKIT_TRACK=""    # 40 | 41 (set during install_deps)
+
+ASSET_KEY=""        # e.g. linux-x86_64-webkit41
+ASSET_TARBALL=""    # e.g. openflow-linux-x86_64-webkit41.tar.gz
+ASSET_SHA256=""     # e.g. openflow-linux-x86_64-webkit41.tar.gz.sha256
 
 usage() {
   cat <<'EOF'
 OpenFlow installer (Linux x86_64)
 
 Usage:
-  install.sh [--yes] [--models=parakeet,silero | --no-models]
+  install.sh [--yes] [--webkit=auto|40|41] [--models=parakeet,silero | --no-models]
   install.sh --uninstall
 
 Environment:
@@ -26,6 +30,7 @@ Environment:
 
 Examples:
   ./install.sh
+  ./install.sh --webkit=40
   ./install.sh --yes --models=parakeet,silero
   ./install.sh --uninstall
 EOF
@@ -77,6 +82,10 @@ while [ "$#" -gt 0 ]; do
       MODELS_LIST="${1#--models=}"
       shift
       ;;
+    --webkit=*)
+      WEBKIT_MODE="${1#--webkit=}"
+      shift
+      ;;
     *)
       die "unknown argument: $1"
       ;;
@@ -120,6 +129,100 @@ detect_package_manager() {
   fi
 }
 
+pm_install() {
+  local pm="$1"
+  shift
+
+  case "$pm" in
+    apt)
+      sudo_run env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$@"
+      ;;
+    dnf)
+      sudo_run dnf install -y "$@"
+      ;;
+    pacman)
+      local args=( -Sy --needed )
+      if [ "$YES" -eq 1 ]; then
+        args+=( --noconfirm )
+      fi
+      sudo_run pacman "${args[@]}" "$@"
+      ;;
+    zypper)
+      sudo_run zypper --non-interactive install -y "$@"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+pm_install_any() {
+  local pm="$1"
+  shift
+
+  local pkg
+  for pkg in "$@"; do
+    if pm_install "$pm" "$pkg"; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+apt_pkg_available() {
+  local pkg="$1"
+  apt-cache show "$pkg" >/dev/null 2>&1
+}
+
+apt_pick_webkit40_runtime_pkg() {
+  # Ubuntu/Debian name WebKitGTK 4.0 runtime as libwebkit2gtk-4.0-<abi> (abi is a number).
+  # Pick the newest available ABI package name so we don't have to hardcode -37/-xx.
+  apt-cache search --names-only '^libwebkit2gtk-4\\.0-[0-9][0-9]*$' 2>/dev/null \
+    | awk '{print $1}' \
+    | sort -t- -k3,3n \
+    | tail -n 1
+}
+
+have_shared_lib_soname() {
+  local soname="$1"
+
+  if command -v ldconfig >/dev/null 2>&1; then
+    ldconfig -p 2>/dev/null | grep -q "$soname"
+    return $?
+  fi
+
+  for dir in /lib /lib64 /usr/lib /usr/lib64; do
+    if [ -e "$dir/$soname" ]; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+have_appindicator_libs() {
+  have_shared_lib_soname "libayatana-appindicator3.so.1" || have_shared_lib_soname "libappindicator3.so.1"
+}
+
+set_assets_from_webkit_track() {
+  case "$WEBKIT_TRACK" in
+    41)
+      ASSET_KEY="linux-x86_64-webkit41"
+      ASSET_TARBALL="openflow-linux-x86_64-webkit41.tar.gz"
+      ;;
+    40)
+      ASSET_KEY="linux-x86_64-webkit40"
+      ASSET_TARBALL="openflow-linux-x86_64-webkit40.tar.gz"
+      ;;
+    *)
+      die "internal error: WEBKIT_TRACK must be 40 or 41 (got '$WEBKIT_TRACK')"
+      ;;
+  esac
+
+  ASSET_SHA256="$ASSET_TARBALL.sha256"
+}
+
 install_deps() {
   local pm
   pm="$(detect_package_manager)"
@@ -127,50 +230,180 @@ install_deps() {
   echo "Installing runtime dependencies (pm=$pm)..."
   case "$pm" in
     apt)
-      sudo_run apt-get update
-      # Clipboard tooling + permissions tooling + common runtime libs.
-      sudo_run apt-get install -y --no-install-recommends \
-        wl-clipboard xclip policykit-1 acl bzip2 \
-        libasound2 libgtk-3-0 libwebkit2gtk-4.1-0 || \
-      sudo_run apt-get install -y --no-install-recommends \
-        wl-clipboard xclip policykit-1 acl bzip2 \
-        libasound2 libgtk-3-0 libwebkit2gtk-4.0-37
+      sudo_run env DEBIAN_FRONTEND=noninteractive apt-get update
+
+      pm_install apt wl-clipboard xclip policykit-1 acl bzip2 curl ca-certificates libgtk-3-0
+
+      if ! pm_install_any apt libevdev2t64 libevdev2; then
+        die "failed to install libevdev runtime (tried libevdev2t64, libevdev2)"
+      fi
+
+      # ALSA: Ubuntu 24.04+ uses libasound2t64; older releases use libasound2.
+      if ! pm_install_any apt libasound2t64 libasound2; then
+        die "failed to install ALSA runtime (tried libasound2t64, libasound2)"
+      fi
+
+      # Decide WebKitGTK track.
+      case "$WEBKIT_MODE" in
+        auto)
+          if apt_pkg_available libwebkit2gtk-4.1-0; then
+            WEBKIT_TRACK=41
+          else
+            WEBKIT_TRACK=40
+          fi
+          ;;
+        41)
+          WEBKIT_TRACK=41
+          ;;
+        40)
+          WEBKIT_TRACK=40
+          ;;
+        *)
+          die "invalid --webkit mode: '$WEBKIT_MODE' (expected auto|40|41)"
+          ;;
+      esac
+
+      if [ "$WEBKIT_TRACK" -eq 41 ]; then
+        if ! apt_pkg_available libwebkit2gtk-4.1-0; then
+          die "libwebkit2gtk-4.1-0 not available on this system. Try: --webkit=40"
+        fi
+        pm_install apt libwebkit2gtk-4.1-0
+      else
+        local webkit40_pkg
+        webkit40_pkg="$(apt_pick_webkit40_runtime_pkg)"
+        if [ -z "$webkit40_pkg" ]; then
+          die "could not find a WebKitGTK 4.0 runtime package (expected libwebkit2gtk-4.0-<abi>)"
+        fi
+        pm_install apt "$webkit40_pkg"
+      fi
+
+      # Tray: dynamically loaded at runtime (ayatana preferred).
+      if ! have_appindicator_libs; then
+        pm_install_any apt libayatana-appindicator3-1 libappindicator3-1 || die "failed to install appindicator runtime (tried libayatana-appindicator3-1, libappindicator3-1)"
+      fi
+      if ! have_appindicator_libs; then
+        die "tray runtime libraries not found (expected libayatana-appindicator3.so.1 or libappindicator3.so.1)"
+      fi
       ;;
     dnf)
-      sudo_run dnf install -y \
-        wl-clipboard xclip polkit acl bzip2 \
-        alsa-lib gtk3 webkit2gtk4.1
+      case "$WEBKIT_MODE" in
+        auto|41)
+          WEBKIT_TRACK=41
+          ;;
+        40)
+          die "Fedora/RHEL-family builds require WebKitGTK 4.1; --webkit=40 is unsupported here"
+          ;;
+        *)
+          die "invalid --webkit mode: '$WEBKIT_MODE' (expected auto|40|41)"
+          ;;
+      esac
+
+      pm_install dnf wl-clipboard xclip polkit acl bzip2 curl ca-certificates alsa-lib gtk3 webkit2gtk4.1 libevdev
+
+      if ! have_appindicator_libs; then
+        pm_install_any dnf libayatana-appindicator-gtk3 libappindicator-gtk3 || die "failed to install appindicator runtime (tried libayatana-appindicator-gtk3, libappindicator-gtk3)"
+      fi
+      if ! have_appindicator_libs; then
+        die "tray runtime libraries not found (expected libayatana-appindicator3.so.1 or libappindicator3.so.1)"
+      fi
       ;;
     pacman)
-      if [ "$YES" -eq 1 ]; then
-        sudo_run pacman -Sy --needed --noconfirm \
-          wl-clipboard xclip polkit acl bzip2 \
-          alsa-lib gtk3 webkit2gtk
-      else
-        sudo_run pacman -Sy --needed \
-          wl-clipboard xclip polkit acl bzip2 \
-          alsa-lib gtk3 webkit2gtk
+      case "$WEBKIT_MODE" in
+        auto|41)
+          WEBKIT_TRACK=41
+          ;;
+        40)
+          die "Arch-based builds require WebKitGTK 4.1; --webkit=40 is unsupported here"
+          ;;
+        *)
+          die "invalid --webkit mode: '$WEBKIT_MODE' (expected auto|40|41)"
+          ;;
+      esac
+
+      pm_install pacman wl-clipboard xclip polkit acl bzip2 curl ca-certificates alsa-lib gtk3 webkit2gtk libevdev
+
+      if ! have_appindicator_libs; then
+        pm_install_any pacman libayatana-appindicator libappindicator || die "failed to install appindicator runtime (tried libayatana-appindicator, libappindicator)"
+      fi
+      if ! have_appindicator_libs; then
+        die "tray runtime libraries not found (expected libayatana-appindicator3.so.1 or libappindicator3.so.1)"
       fi
       ;;
     zypper)
-      sudo_run zypper --non-interactive install -y \
-        wl-clipboard xclip polkit acl bzip2 \
-        alsa gtk3 libwebkit2gtk-4_1-0 || \
-      sudo_run zypper --non-interactive install -y \
-        wl-clipboard xclip polkit acl bzip2 \
-        alsa gtk3 libwebkit2gtk-4_0-0
+      pm_install zypper wl-clipboard xclip polkit acl bzip2 curl ca-certificates gtk3
+
+      if ! pm_install_any zypper libevdev2 libevdev; then
+        die "failed to install libevdev runtime (tried libevdev2, libevdev)"
+      fi
+
+      if ! pm_install_any zypper alsa-lib alsa; then
+        die "failed to install ALSA runtime (tried alsa-lib, alsa)"
+      fi
+
+      case "$WEBKIT_MODE" in
+        auto)
+          if pm_install zypper libwebkit2gtk-4_1-0; then
+            WEBKIT_TRACK=41
+          else
+            pm_install zypper libwebkit2gtk-4_0-0
+            WEBKIT_TRACK=40
+          fi
+          ;;
+        41)
+          pm_install zypper libwebkit2gtk-4_1-0
+          WEBKIT_TRACK=41
+          ;;
+        40)
+          pm_install zypper libwebkit2gtk-4_0-0
+          WEBKIT_TRACK=40
+          ;;
+        *)
+          die "invalid --webkit mode: '$WEBKIT_MODE' (expected auto|40|41)"
+          ;;
+      esac
+
+      if ! have_appindicator_libs; then
+        pm_install_any zypper libayatana-appindicator3-1 libappindicator3-1 || die "failed to install appindicator runtime (tried libayatana-appindicator3-1, libappindicator3-1)"
+      fi
+      if ! have_appindicator_libs; then
+        die "tray runtime libraries not found (expected libayatana-appindicator3.so.1 or libappindicator3.so.1)"
+      fi
       ;;
     *)
       echo "Unsupported package manager. Please install dependencies manually:" >&2
+      echo "- curl + ca-certificates" >&2
       echo "- wl-clipboard (wl-copy, wl-paste)" >&2
       echo "- xclip" >&2
       echo "- polkit/pkexec" >&2
       echo "- acl (setfacl)" >&2
       echo "- bzip2" >&2
       echo "- webkit2gtk + gtk3 + ALSA runtime libs (distro-specific package names)" >&2
+      echo "- appindicator/ayatana libs for tray (distro-specific package names)" >&2
       return 1
       ;;
   esac
+
+  if [ -z "$WEBKIT_TRACK" ]; then
+    die "internal error: WEBKIT_TRACK not set after dependency installation"
+  fi
+
+  set_assets_from_webkit_track
+
+  echo "Using WebKitGTK track: $WEBKIT_TRACK (asset=$ASSET_TARBALL)"
+}
+
+validate_runtime_links() {
+  # Ensure the installed binary can resolve system runtime libraries.
+  if ! command -v ldd >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local out
+  out="$(LD_LIBRARY_PATH="$INSTALL_DIR/lib" ldd "$INSTALL_DIR/openflow-bin" 2>&1 || true)"
+  if printf '%s\n' "$out" | grep -q "not found"; then
+    printf '%s\n' "$out" >&2
+    die "missing runtime libraries (see ldd output). Try rerunning installer or installing missing system packages"
+  fi
 }
 
 download_file() {
@@ -199,6 +432,10 @@ verify_sha256() {
 install_app_tarball() {
   local tmp
   tmp="$(mktemp -d)"
+
+  if [ -z "$ASSET_TARBALL" ] || [ -z "$ASSET_SHA256" ]; then
+    die "internal error: release asset name not selected"
+  fi
 
   echo "Downloading release assets from $BASE_URL..."
   download_file "$BASE_URL/$ASSET_TARBALL" "$tmp/$ASSET_TARBALL"
@@ -229,6 +466,8 @@ install_app_tarball() {
   sudo_run chmod 0755 "$INSTALL_DIR/openflow" "$INSTALL_DIR/openflow-bin"
 
   rm -rf "$tmp"
+
+  validate_runtime_links
 }
 
 install_symlink() {

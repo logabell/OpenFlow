@@ -88,6 +88,93 @@ fn manifest_url() -> String {
     std::env::var("OPENFLOW_UPDATE_MANIFEST_URL").unwrap_or_else(|_| DEFAULT_MANIFEST_URL.into())
 }
 
+fn build_flavor_from_install_dir() -> Option<String> {
+    let override_key = std::env::var("OPENFLOW_UPDATE_ASSET_KEY").ok();
+    if let Some(value) = override_key {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    let path = dir.join("BUILD_FLAVOR");
+    let contents = fs::read_to_string(path).ok()?;
+    let first = contents.lines().next().unwrap_or("").trim();
+    if first.is_empty() {
+        None
+    } else {
+        Some(first.to_string())
+    }
+}
+
+fn infer_asset_key_from_exe_binary() -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    let bytes = fs::read(exe).ok()?;
+
+    // This is a pragmatic heuristic: the binary typically contains the SONAME it links against.
+    // If this ever fails, builds should still include BUILD_FLAVOR (preferred path).
+    if bytes
+        .windows(b"libwebkit2gtk-4.1.so.0".len())
+        .any(|w| w == b"libwebkit2gtk-4.1.so.0")
+    {
+        return Some("linux-x86_64-webkit41".to_string());
+    }
+
+    if bytes
+        .windows(b"libwebkit2gtk-4.0.so".len())
+        .any(|w| w == b"libwebkit2gtk-4.0.so")
+    {
+        return Some("linux-x86_64-webkit40".to_string());
+    }
+
+    None
+}
+
+fn select_asset_key(manifest: &LatestManifest) -> Result<String> {
+    let mut candidates: Vec<String> = Vec::new();
+    if let Some(key) = build_flavor_from_install_dir() {
+        candidates.push(key);
+    }
+    if let Some(key) = infer_asset_key_from_exe_binary() {
+        if !candidates.contains(&key) {
+            candidates.push(key);
+        }
+    }
+
+    // Sensible fallbacks.
+    for key in [
+        "linux-x86_64-webkit41",
+        "linux-x86_64-webkit40",
+        "linux-x86_64",
+    ] {
+        let key = key.to_string();
+        if !candidates.contains(&key) {
+            candidates.push(key);
+        }
+    }
+
+    for key in &candidates {
+        if manifest.assets.contains_key(key) {
+            return Ok(key.clone());
+        }
+    }
+
+    if manifest.assets.len() == 1 {
+        if let Some((key, _)) = manifest.assets.iter().next() {
+            return Ok(key.clone());
+        }
+    }
+
+    let available: Vec<String> = manifest.assets.keys().cloned().collect();
+    Err(anyhow!(
+        "latest.json missing a compatible asset. Tried {:?}. Available: {:?}",
+        candidates,
+        available
+    ))
+}
+
 fn base_url_from_manifest_url(url: &str) -> Result<String> {
     let trimmed = url
         .strip_suffix("/latest.json")
@@ -197,11 +284,12 @@ fn build_result(
     let latest_version = manifest.version.clone();
     let update_available = is_newer(&latest_version, current_version);
 
+    let asset_key = select_asset_key(&manifest)?;
     let asset = manifest
         .assets
-        .get("linux-x86_64")
+        .get(&asset_key)
         .cloned()
-        .ok_or_else(|| anyhow!("latest.json missing assets.linux-x86_64"))?;
+        .ok_or_else(|| anyhow!("latest.json missing assets.{asset_key}"))?;
 
     let tarball_url = format!("{}/{}", base_url.trim_end_matches('/'), asset.tarball);
     let sha256_url = format!("{}/{}", base_url.trim_end_matches('/'), asset.sha256_file);

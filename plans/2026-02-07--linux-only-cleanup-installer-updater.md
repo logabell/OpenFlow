@@ -21,7 +21,9 @@ The codebase contains a mix of Linux-first implementation and legacy/placeholder
 
 Goals
 - Remove Windows/macOS-specific code, configuration, documentation, and CI/release scaffolding.
-- Define a Linux-only release artifact: `openflow-linux-x86_64.tar.gz` and checksum file `openflow-linux-x86_64.tar.gz.sha256`.
+- Define Linux release artifacts for multiple WebKitGTK ABIs:
+  - `openflow-linux-x86_64-webkit40.tar.gz` + `.sha256` (WebKitGTK 4.0)
+  - `openflow-linux-x86_64-webkit41.tar.gz` + `.sha256` (WebKitGTK 4.1)
 - Provide a GitHub Releases-hosted `install.sh` supporting install, update, and uninstall.
 - Automate permissions setup required for global hotkeys and text injection (evdev + `/dev/uinput`) via udev + group membership.
 - Add a custom updater flow in-app:
@@ -135,7 +137,9 @@ Candidate file anchors (expected hotspots)
 - App checks `latest.json` on startup (with caching to avoid excessive network calls; e.g., once per 24h) and provides a manual “Check for updates” action.
 - When a new version is available, app displays a toast notification.
 - On user action, app:
-  - Downloads `openflow-linux-x86_64.tar.gz` and `openflow-linux-x86_64.tar.gz.sha256`
+  - Downloads the correct tarball for the current install flavor:
+    - `openflow-linux-x86_64-webkit40.tar.gz` + `.sha256`, or
+    - `openflow-linux-x86_64-webkit41.tar.gz` + `.sha256`
   - Verifies SHA256
   - Applies the update into `/opt/openflow/` using a privileged operation
   - Prompts user to restart to complete update
@@ -221,8 +225,10 @@ Uninstall
 ## Integration Points
 - GitHub Releases
   - `install.sh` asset
-  - `openflow-linux-x86_64.tar.gz` asset
-  - `openflow-linux-x86_64.tar.gz.sha256` asset
+  - `openflow-linux-x86_64-webkit40.tar.gz` asset
+  - `openflow-linux-x86_64-webkit40.tar.gz.sha256` asset
+  - `openflow-linux-x86_64-webkit41.tar.gz` asset
+  - `openflow-linux-x86_64-webkit41.tar.gz.sha256` asset
   - `latest.json` manifest asset
 - System dependencies via apt/dnf/pacman/zypper.
 - Privilege escalation:
@@ -244,8 +250,8 @@ Uninstall
    - Specify tarball contents and install paths.
    - Decide X11 clipboard tool standardization (`xclip` vs `xsel`).
 3) Implement release packaging pipeline
-   - Produce `openflow-linux-x86_64.tar.gz`.
-   - Generate `openflow-linux-x86_64.tar.gz.sha256`.
+   - Produce `openflow-linux-x86_64-webkit40.tar.gz` and `openflow-linux-x86_64-webkit41.tar.gz`.
+   - Generate matching `.sha256` files.
    - Generate and upload `latest.json` pointing to correct URLs for the latest release.
 4) Implement `install.sh`
    - Package manager detection + deps install.
@@ -280,7 +286,7 @@ M1: Linux-only cleanup
 
 M2: Installer + release artifacts
 - Deliverables:
-  - `openflow-linux-x86_64.tar.gz` + `.sha256`.
+  - `openflow-linux-x86_64-webkit40.tar.gz` + `.sha256` and `openflow-linux-x86_64-webkit41.tar.gz` + `.sha256`.
   - `install.sh` Release asset supporting install/uninstall.
   - Default model download during install.
 - Exit criteria:

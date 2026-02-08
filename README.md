@@ -9,19 +9,19 @@ Hold a hotkey to talk, release to transcribe on-device, optionally clean up the 
 ## Install (single command)
 
 ```bash
-curl -fsSL https://github.com/logabell/OpenFlow/releases/latest/download/install.sh | bash
+curl -fsSL https://github.com/logabell/OpenFlow/releases/latest/download/install.sh -o /tmp/openflow-install.sh && bash /tmp/openflow-install.sh
 ```
 
 Non-interactive (CI-friendly):
 
 ```bash
-curl -fsSL https://github.com/logabell/OpenFlow/releases/latest/download/install.sh | bash -s -- --yes --models=parakeet,silero
+curl -fsSL https://github.com/logabell/OpenFlow/releases/latest/download/install.sh -o /tmp/openflow-install.sh && bash /tmp/openflow-install.sh --yes --models=parakeet,silero
 ```
 
 Uninstall:
 
 ```bash
-curl -fsSL https://github.com/logabell/OpenFlow/releases/latest/download/install.sh | bash -s -- --uninstall
+curl -fsSL https://github.com/logabell/OpenFlow/releases/latest/download/install.sh -o /tmp/openflow-install.sh && bash /tmp/openflow-install.sh --uninstall
 ```
 
 ## What The Installer Does
