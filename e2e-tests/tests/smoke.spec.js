@@ -154,7 +154,16 @@ describe("OpenFlow UI", function () {
       until.elementLocated(By.xpath("//button[contains(., 'Settings')]")),
       60000,
     );
-    await settingsButton.click();
+    try {
+      await settingsButton.click();
+    } catch (error) {
+      // Some WebKit WebDriver builds (notably on Fedora) don't support native element clicks.
+      // Fall back to a DOM click so we can still validate basic UI wiring.
+      if (error?.name !== "UnsupportedOperationError") {
+        throw error;
+      }
+      await driver.executeScript("arguments[0].click()", settingsButton);
+    }
 
     const panelHeader = await driver.wait(
       until.elementLocated(By.xpath("//h2[contains(., 'Settings')]")),
