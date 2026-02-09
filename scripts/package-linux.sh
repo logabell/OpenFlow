@@ -28,11 +28,10 @@ with open('app/src-tauri/tauri.conf.json', 'r', encoding='utf-8') as f:
 PY
 )"
 
-echo "Building frontend..."
-(cd "$APP_DIR" && yarn build)
-
-echo "Building backend (release)..."
-(cd "$TAURI_DIR" && cargo build --release)
+echo "Building Tauri app (release, no bundle)..."
+# Use the Tauri CLI build to ensure the production asset pipeline is configured correctly.
+# A plain `cargo build --release` can result in a binary that still targets the devUrl.
+(cd "$APP_DIR" && yarn tauri build --ci --no-bundle)
 
 BIN="$TAURI_DIR/target/release/openflow"
 LIB_DIR_SRC="$TAURI_DIR/target/release"
@@ -41,7 +40,7 @@ if [ ! -x "$BIN" ]; then
   exit 1
 fi
 
-ASSET_KEY="linux-x86_64"
+ASSET_KEY="linux-x86_64-webkit41"
 
 STAGE="$(mktemp -d)"
 cleanup() { rm -rf "$STAGE"; }
@@ -52,6 +51,12 @@ mkdir -p "$STAGE/openflow/lib"
 
 cp "$BIN" "$STAGE/openflow/openflow-bin"
 chmod 0755 "$STAGE/openflow/openflow-bin"
+
+# Prefer an rpath pointing at our bundled runtime libs so the binary can be launched
+# directly (e.g. by GUI automation) without relying on a wrapper script.
+if command -v patchelf >/dev/null 2>&1; then
+  patchelf --set-rpath '$ORIGIN/lib' "$STAGE/openflow/openflow-bin" || true
+fi
 
 cat > "$STAGE/openflow/openflow" <<'EOF'
 #!/usr/bin/env bash

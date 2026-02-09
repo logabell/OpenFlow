@@ -1,0 +1,13 @@
+{
+  "name": "openflow-e2e-tests",
+  "private": true,
+  "type": "module",
+  "packageManager": "yarn@1.22.19",
+  "scripts": {
+    "test": "mocha --timeout 180000 \"tests/**/*.spec.js\""
+  },
+  "devDependencies": {
+    "mocha": "^10.8.2",
+    "selenium-webdriver": "^4.27.0"
+  }
+}

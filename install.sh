@@ -23,6 +23,7 @@ Usage:
 
 Environment:
   OPENFLOW_REPO=<org/repo>   (default: logabell/OpenFlow)
+  OPENFLOW_BASE_URL=<url>    (optional override; defaults to GitHub Releases latest/download)
 
 Examples:
   ./install.sh
@@ -104,7 +105,7 @@ if [[ ! "$USER_NAME" =~ ^[a-zA-Z0-9_.-]+$ ]]; then
 fi
 
 REPO="${OPENFLOW_REPO:-$OPENFLOW_REPO_DEFAULT}"
-BASE_URL="https://github.com/$REPO/releases/latest/download"
+BASE_URL="${OPENFLOW_BASE_URL:-https://github.com/$REPO/releases/latest/download}"
 
 detect_package_manager() {
   if command -v apt-get >/dev/null 2>&1; then
@@ -235,7 +236,7 @@ install_deps() {
       fi
       ;;
     pacman)
-      pm_install pacman wl-clipboard xclip polkit acl bzip2 curl ca-certificates alsa-lib gtk3 webkit2gtk libevdev
+      pm_install pacman wl-clipboard xclip polkit acl bzip2 curl ca-certificates alsa-lib gtk3 webkit2gtk-4.1 libevdev
 
       pm_install pacman sentencepiece
 

@@ -11,6 +11,22 @@ use time::{Duration, OffsetDateTime};
 const DEFAULT_MANIFEST_URL: &str =
     "https://github.com/logabell/OpenFlow/releases/latest/download/latest.json";
 
+fn env_flag_enabled(key: &str) -> bool {
+    let value = match std::env::var(key) {
+        Ok(value) => value,
+        Err(_) => return false,
+    };
+
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "y" | "on"
+    )
+}
+
+fn disable_update_checks() -> bool {
+    env_flag_enabled("OPENFLOW_TEST_MODE") || env_flag_enabled("OPENFLOW_DISABLE_UPDATE_CHECK")
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct LatestAsset {
@@ -230,6 +246,20 @@ fn fetch_manifest(client: &Client, url: &str) -> Result<LatestManifest> {
 
 pub fn check_for_updates(force: bool) -> Result<UpdateCheckResult> {
     let current_version = format!("v{}", env!("CARGO_PKG_VERSION"));
+
+    if disable_update_checks() {
+        let checked_at_unix = OffsetDateTime::now_utc().unix_timestamp();
+        return Ok(UpdateCheckResult {
+            current_version: current_version.clone(),
+            latest_version: current_version,
+            update_available: false,
+            tarball_url: None,
+            sha256_url: None,
+            checked_at_unix,
+            from_cache: false,
+        });
+    }
+
     let url = manifest_url();
     let base_url = base_url_from_manifest_url(&url)?;
 

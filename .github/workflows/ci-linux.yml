@@ -1,13 +1,10 @@
-name: Release (Linux x86_64)
+name: CI (Linux Matrix)
 
 on:
+  pull_request:
   push:
-    tags:
-      - "v*.*.*"
-  workflow_dispatch:
-
-permissions:
-  contents: write
+    branches:
+      - main
 
 jobs:
   build-tarball:
@@ -455,29 +452,3 @@ jobs:
           trap 'kill $XVFB_PID' EXIT
           export DISPLAY=:99
           yarn test
-
-  upload-release-assets:
-    name: Upload GitHub Release assets
-    runs-on: ubuntu-24.04
-    needs:
-      - installer-smoke
-      - ui-e2e-ubuntu
-      - ui-e2e-debian
-      - ui-e2e-fedora
-      - ui-e2e-arch
-    steps:
-      - name: Download tarball artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: linux-dist
-          path: dist
-
-      - name: Upload release assets
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            dist/openflow-linux-x86_64.tar.gz
-            dist/openflow-linux-x86_64.tar.gz.sha256
-            dist/latest.json
-            dist/install.sh
-          generate_release_notes: true

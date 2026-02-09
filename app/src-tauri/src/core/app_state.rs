@@ -22,6 +22,27 @@ use tracing::{debug, warn};
 use super::pipeline::{OutputMode, SpeechPipeline};
 use super::settings::{AsrSelection, SettingsManager};
 
+fn env_flag_enabled(key: &str) -> bool {
+    let value = match std::env::var(key) {
+        Ok(value) => value,
+        Err(_) => return false,
+    };
+
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "y" | "on"
+    )
+}
+
+fn disable_asr_warmup() -> bool {
+    env_flag_enabled("OPENFLOW_TEST_MODE") || env_flag_enabled("OPENFLOW_DISABLE_ASR_WARMUP")
+}
+
+fn disable_model_autodownload() -> bool {
+    env_flag_enabled("OPENFLOW_TEST_MODE")
+        || env_flag_enabled("OPENFLOW_DISABLE_MODEL_AUTODOWNLOAD")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AsrWarmupState {
     Warming,
@@ -58,6 +79,11 @@ pub struct AppState {
 impl AppState {
     pub fn new() -> Self {
         let models = ModelManager::new().expect("failed to initialize model manager");
+        let warmup_state = if disable_asr_warmup() {
+            AsrWarmupState::Ready
+        } else {
+            AsrWarmupState::Warming
+        };
         Self {
             settings: Arc::new(SettingsManager::new()),
             pipeline: Arc::new(Mutex::new(None)),
@@ -66,7 +92,7 @@ impl AppState {
             downloads: Arc::new(Mutex::new(None)),
             hud_state: Arc::new(Mutex::new("idle".to_string())),
             asr_warmup: Arc::new(Mutex::new(AsrWarmupTracker {
-                state: AsrWarmupState::Warming,
+                state: warmup_state,
                 warmed_selection: None,
                 target_selection: None,
                 last_error: None,
@@ -101,6 +127,20 @@ impl AppState {
     }
 
     pub fn kickoff_asr_warmup(&self, app: &AppHandle) {
+        if disable_asr_warmup() {
+            let selection = self
+                .settings
+                .read_frontend()
+                .ok()
+                .map(|s| AsrSelection::from_frontend(&s));
+            let mut tracker = self.asr_warmup.lock();
+            tracker.state = AsrWarmupState::Ready;
+            tracker.warmed_selection = selection.clone();
+            tracker.target_selection = selection;
+            tracker.last_error = None;
+            return;
+        }
+
         let settings = match self.settings.read_frontend() {
             Ok(settings) => settings,
             Err(error) => {
@@ -396,8 +436,10 @@ impl AppState {
 
         self.repair_installed_ct2_models(app);
 
-        // Auto-download default models if they're not installed
-        self.auto_download_default_models(app);
+        if !disable_model_autodownload() {
+            // Auto-download default models if they're not installed
+            self.auto_download_default_models(app);
+        }
 
         Ok(())
     }

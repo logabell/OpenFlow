@@ -6,6 +6,12 @@ Hold a hotkey to talk, release to transcribe on-device, optionally clean up the 
 - OS support: Linux only (Wayland + X11)
 - CPU arch: x86_64 only
 
+Tested / supported distro baselines:
+- Ubuntu 24.04+
+- Debian 12+
+- Fedora 40+
+- Arch (rolling)
+
 ## Install (single command)
 
 ```bash
