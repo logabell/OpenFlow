@@ -1,6 +1,6 @@
 [package]
 name = "openflow"
-version = "0.1.7"
+version = "0.1.8"
 description = "OpenFlow application backend"
 authors = ["OpenFlow Team"]
 license = "MIT"
