@@ -39,8 +39,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: yarn
-          cache-dependency-path: app/yarn.lock
 
       - name: Enable Yarn via Corepack
         run: |
@@ -165,10 +163,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: yarn
-          cache-dependency-path: |
-            app/yarn.lock
-            e2e-tests/yarn.lock
 
       - name: Enable Yarn via Corepack
         run: |
@@ -238,10 +232,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: yarn
-          cache-dependency-path: |
-            app/yarn.lock
-            e2e-tests/yarn.lock
 
       - name: Enable Yarn via Corepack
         run: |
@@ -327,10 +317,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: yarn
-          cache-dependency-path: |
-            app/yarn.lock
-            e2e-tests/yarn.lock
 
       - name: Enable Yarn via Corepack
         run: |
@@ -409,10 +395,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: yarn
-          cache-dependency-path: |
-            app/yarn.lock
-            e2e-tests/yarn.lock
 
       - name: Enable Yarn via Corepack
         run: |
