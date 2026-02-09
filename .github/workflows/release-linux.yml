@@ -24,6 +24,7 @@ jobs:
           apt-get install -y --no-install-recommends \
             ca-certificates curl xz-utils python3 \
             build-essential pkg-config clang libclang-dev \
+            libssl-dev \
             autoconf automake libtool \
             libgtk-3-dev \
             libwebkit2gtk-4.1-dev \
@@ -221,6 +222,7 @@ jobs:
           apt-get install -y --no-install-recommends \
             ca-certificates curl xz-utils python3 \
             build-essential pkg-config clang libclang-dev \
+            libssl-dev \
             libgtk-3-dev \
             libwebkit2gtk-4.1-dev \
             libayatana-appindicator3-dev \
@@ -289,6 +291,7 @@ jobs:
           set -eux
           dnf -y install \
             ca-certificates curl which tar gzip xz \
+            openssl-devel \
             webkit2gtk4.1 webkit2gtk4.1-devel \
             gtk3 \
             alsa-lib \
@@ -377,6 +380,7 @@ jobs:
           pacman-key --populate archlinux || true
           pacman -Sy --noconfirm --needed \
             ca-certificates curl which tar gzip xz \
+            openssl \
             gtk3 \
             alsa-lib \
             libevdev \
