@@ -1,0 +1,5 @@
+[env]
+# sentencepiece-sys (0.12.x) bundles a SentencePiece snapshot that relies on
+# transitive includes for uint32_t; newer toolchains can error without <cstdint>.
+# For deterministic builds (CI + local), force-include it for C++ compilation.
+CXXFLAGS = "-include cstdint"
