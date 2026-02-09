@@ -1,137 +1,130 @@
 #[cfg(feature = "vad-silero")]
 mod silero {
     use anyhow::{anyhow, Context, Result};
-    use ort::{
-        session::{builder::GraphOptimizationLevel, Session},
-        value::Tensor,
-    };
+    use std::ffi::CString;
 
-    const SAMPLE_RATE: usize = 16_000;
-    const FRAME_SIZE: usize = 512;
+    use sherpa_rs_sys as sys;
+
+    const SAMPLE_RATE: i32 = 16_000;
+    const WINDOW_SIZE: i32 = 512;
+    const BUFFER_SIZE_SECONDS: f32 = 30.0;
 
     pub struct SileroVad {
-        session: Session,
-        hidden_state: Option<(Vec<usize>, Vec<f32>)>,
-        pending: Vec<f32>,
-        pending_offset: usize,
-        last_probability: f32,
+        vad: *const sys::SherpaOnnxVoiceActivityDetector,
+        last_score: f32,
         speech_threshold: f32,
     }
 
     impl SileroVad {
-        pub fn new(model_bytes: &[u8], speech_threshold: f32) -> Result<Self> {
-            let session = Session::builder()
-                .map_err(|err| anyhow!(err))?
-                .with_optimization_level(GraphOptimizationLevel::Level3)
-                .map_err(|err| anyhow!(err))?
-                .commit_from_memory(model_bytes)
-                .map_err(|err| anyhow!(err))?;
+        pub fn new(model_path: &str, speech_threshold: f32) -> Result<Self> {
+            let provider = std::env::var("SHERPA_PROVIDER").unwrap_or_else(|_| "cpu".into());
+            let num_threads = std::env::var("SHERPA_THREADS")
+                .ok()
+                .and_then(|value| value.parse::<i32>().ok())
+                .filter(|value| *value > 0)
+                .unwrap_or(1);
 
-            Ok(Self {
-                session,
-                hidden_state: None,
-                pending: Vec::with_capacity(FRAME_SIZE * 4),
-                pending_offset: 0,
-                last_probability: 0.0,
-                speech_threshold: speech_threshold.clamp(0.0, 1.0),
-            })
+            Self::new_with_runtime(model_path, speech_threshold, &provider, num_threads, false)
         }
 
         pub fn from_env(speech_threshold: f32) -> Result<Self> {
-            let path = std::env::var("SILERO_VAD_MODEL").context("SILERO_VAD_MODEL not set")?;
-            let bytes = std::fs::read(path).context("read silero model")?;
-            Self::new(&bytes, speech_threshold)
+            let model_path =
+                std::env::var("SILERO_VAD_MODEL").context("SILERO_VAD_MODEL not set")?;
+            Self::new(&model_path, speech_threshold)
+        }
+
+        fn new_with_runtime(
+            model_path: &str,
+            speech_threshold: f32,
+            provider: &str,
+            num_threads: i32,
+            debug: bool,
+        ) -> Result<Self> {
+            // sherpa-onnx validates threshold to be >= 0.01 and < 1.0.
+            let speech_threshold = speech_threshold.clamp(0.01, 0.99);
+
+            let model_c = CString::new(model_path).context("silero model path contains NUL")?;
+            let provider_c = CString::new(provider).context("provider contains NUL")?;
+
+            let silero_config = sys::SherpaOnnxSileroVadModelConfig {
+                model: model_c.as_ptr(),
+                threshold: speech_threshold,
+                // Keep these low; OpenFlow applies its own hangover in VoiceActivityDetector.
+                min_silence_duration: 0.1,
+                min_speech_duration: 0.15,
+                window_size: WINDOW_SIZE,
+                max_speech_duration: 20.0,
+            };
+
+            let vad_config = sys::SherpaOnnxVadModelConfig {
+                silero_vad: silero_config,
+                sample_rate: SAMPLE_RATE,
+                num_threads,
+                provider: provider_c.as_ptr(),
+                debug: if debug { 1 } else { 0 },
+                // ten_vad is unused when silero_vad.model is set.
+                ten_vad: unsafe { std::mem::zeroed::<sys::SherpaOnnxTenVadModelConfig>() },
+            };
+
+            let vad = unsafe {
+                sys::SherpaOnnxCreateVoiceActivityDetector(&vad_config, BUFFER_SIZE_SECONDS)
+            };
+            if vad.is_null() {
+                return Err(anyhow!(
+                    "failed to create SherpaOnnxVoiceActivityDetector (silero model: {})",
+                    model_path
+                ));
+            }
+
+            Ok(Self {
+                vad,
+                last_score: 0.0,
+                speech_threshold,
+            })
         }
 
         pub fn reset(&mut self) {
-            self.hidden_state = None;
-            self.pending.clear();
-            self.pending_offset = 0;
-            self.last_probability = 0.0;
+            self.last_score = 0.0;
+            unsafe {
+                sys::SherpaOnnxVoiceActivityDetectorReset(self.vad);
+            }
         }
 
         pub fn speech_threshold(&self) -> f32 {
             self.speech_threshold
         }
 
-        /// Ingest audio and return the latest speech probability.
+        /// Ingest audio and return a 0..1 speech score.
         ///
-        /// Silero expects contiguous 512-sample windows at 16kHz.
-        /// Our capture uses 20ms frames (320 samples), so we buffer across calls
-        /// and only run inference on real 512-sample chunks.
+        /// sherpa-onnx VAD is stateful and returns a detected/silent decision.
+        /// We expose it as `1.0` / `0.0` to fit OpenFlow's diagnostics interface.
         pub fn ingest(&mut self, audio: &[f32]) -> Result<f32> {
             if audio.is_empty() {
-                return Ok(self.last_probability);
+                return Ok(self.last_score);
             }
 
-            self.pending.extend_from_slice(audio);
-
-            while self.pending.len().saturating_sub(self.pending_offset) >= FRAME_SIZE {
-                let start = self.pending_offset;
-                let end = start + FRAME_SIZE;
-                let frame = self.pending[start..end].to_vec();
-                self.pending_offset = end;
-
-                let prob = self.run_model(&frame)?;
-                self.last_probability = prob;
+            let n = i32::try_from(audio.len()).map_err(|_| anyhow!("audio frame too large"))?;
+            unsafe {
+                sys::SherpaOnnxVoiceActivityDetectorAcceptWaveform(self.vad, audio.as_ptr(), n);
             }
 
-            // Periodically compact the pending buffer to avoid unbounded growth.
-            if self.pending_offset > 0 && self.pending_offset >= FRAME_SIZE * 8 {
-                self.pending.drain(..self.pending_offset);
-                self.pending_offset = 0;
-            }
-
-            Ok(self.last_probability)
-        }
-
-        fn run_model(&mut self, frame: &[f32]) -> Result<f32> {
-            if frame.len() != FRAME_SIZE {
-                return Err(anyhow!(
-                    "silero frame size mismatch (got {}, expected {})",
-                    frame.len(),
-                    FRAME_SIZE
-                ));
-            }
-
-            let audio_tensor =
-                Tensor::from_array(([1usize, FRAME_SIZE], frame.to_vec().into_boxed_slice()))
-                    .map_err(|err| anyhow!(err))?;
-            let sr_tensor =
-                Tensor::from_array(([1usize], vec![SAMPLE_RATE as f32].into_boxed_slice()))
-                    .map_err(|err| anyhow!(err))?;
-
-            let outputs = if let Some((state_shape, state_data)) = self.hidden_state.as_ref() {
-                let hidden_tensor = Tensor::from_array((
-                    state_shape.clone(),
-                    state_data.clone().into_boxed_slice(),
-                ))
-                .map_err(|err| anyhow!(err))?;
-                self.session
-                    .run(ort::inputs![audio_tensor, sr_tensor, hidden_tensor])
-                    .map_err(|err| anyhow!(err))?
-            } else {
-                self.session
-                    .run(ort::inputs![audio_tensor, sr_tensor])
-                    .map_err(|err| anyhow!(err))?
-            };
-
-            let (_, speech_tensor) = outputs[0]
-                .try_extract_tensor::<f32>()
-                .map_err(|err| anyhow!(err))?;
-            let speech_prob = speech_tensor.first().copied().unwrap_or(0.0);
-
-            let (state_shape, state_tensor) = outputs[1]
-                .try_extract_tensor::<f32>()
-                .map_err(|err| anyhow!(err))?;
-            self.hidden_state = Some((
-                state_shape.iter().map(|dim| *dim as usize).collect(),
-                state_tensor.to_vec(),
-            ));
-
-            Ok(speech_prob)
+            let detected = unsafe { sys::SherpaOnnxVoiceActivityDetectorDetected(self.vad) } != 0;
+            let score = if detected { 1.0 } else { 0.0 };
+            self.last_score = score;
+            Ok(score)
         }
     }
+
+    impl Drop for SileroVad {
+        fn drop(&mut self) {
+            unsafe {
+                sys::SherpaOnnxDestroyVoiceActivityDetector(self.vad);
+            }
+        }
+    }
+
+    unsafe impl Send for SileroVad {}
+    unsafe impl Sync for SileroVad {}
 }
 
 #[cfg(feature = "vad-silero")]
