@@ -292,8 +292,10 @@ jobs:
           set -eux
           dnf -y install \
             ca-certificates curl which tar gzip xz \
+            gcc make pkgconf-pkg-config \
             openssl-devel \
             webkit2gtk4.1 webkit2gtk4.1-devel \
+            webkitgtk6.0 \
             gtk3 \
             alsa-lib \
             libevdev \
@@ -381,6 +383,7 @@ jobs:
           pacman-key --populate archlinux || true
           pacman -Sy --noconfirm --needed \
             ca-certificates curl which tar gzip xz \
+            base-devel \
             openssl \
             gtk3 \
             alsa-lib \

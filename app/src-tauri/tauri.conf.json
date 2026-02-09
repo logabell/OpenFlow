@@ -46,6 +46,7 @@
       {
         "title": "",
         "label": "status-overlay",
+        "create": false,
         "url": "overlay.html",
         "decorations": false,
         "transparent": true,

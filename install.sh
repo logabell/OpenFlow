@@ -208,10 +208,7 @@ install_deps() {
       fi
       pm_install apt libwebkit2gtk-4.1-0
 
-      if ! apt-cache show libsentencepiece0 >/dev/null 2>&1; then
-        die "OpenFlow requires the SentencePiece runtime (libsentencepiece0). On Ubuntu you may need to enable Universe: sudo add-apt-repository universe && sudo apt-get update"
-      fi
-      pm_install apt libsentencepiece0
+      # SentencePiece is statically linked (sentencepiece-sys).
 
       # Tray: dynamically loaded at runtime (ayatana preferred).
       if ! have_appindicator_libs; then
@@ -224,10 +221,6 @@ install_deps() {
     dnf)
       pm_install dnf wl-clipboard xclip polkit acl bzip2 curl ca-certificates alsa-lib gtk3 webkit2gtk4.1 libevdev
 
-      if ! pm_install_any dnf sentencepiece sentencepiece-libs; then
-        die "failed to install sentencepiece runtime (tried sentencepiece, sentencepiece-libs)"
-      fi
-
       if ! have_appindicator_libs; then
         pm_install_any dnf libayatana-appindicator-gtk3 libappindicator-gtk3 || die "failed to install appindicator runtime (tried libayatana-appindicator-gtk3, libappindicator-gtk3)"
       fi
@@ -237,8 +230,6 @@ install_deps() {
       ;;
     pacman)
       pm_install pacman wl-clipboard xclip polkit acl bzip2 curl ca-certificates alsa-lib gtk3 webkit2gtk-4.1 libevdev
-
-      pm_install pacman sentencepiece
 
       if ! have_appindicator_libs; then
         pm_install_any pacman libayatana-appindicator libappindicator || die "failed to install appindicator runtime (tried libayatana-appindicator, libappindicator)"
@@ -259,10 +250,6 @@ install_deps() {
       fi
 
       pm_install zypper libwebkit2gtk-4_1-0
-
-      if ! pm_install_any zypper libsentencepiece0 sentencepiece; then
-        die "failed to install sentencepiece runtime (tried libsentencepiece0, sentencepiece)"
-      fi
 
       if ! have_appindicator_libs; then
         pm_install_any zypper libayatana-appindicator3-1 libappindicator3-1 || die "failed to install appindicator runtime (tried libayatana-appindicator3-1, libappindicator3-1)"
