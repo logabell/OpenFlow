@@ -15,6 +15,10 @@ import ToastStack from "./components/ToastStack";
 
 type LinuxPermissionsStatus = {
   uinputWritable: boolean;
+  x11Session?: boolean;
+  x11DisplayAvailable?: boolean;
+  x11HotkeysAvailable?: boolean;
+  x11XtestAvailable?: boolean;
   clipboardBackend: string;
   wlCopyAvailable: boolean;
   wlPasteAvailable: boolean;

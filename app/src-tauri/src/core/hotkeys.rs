@@ -16,6 +16,19 @@ enum HotkeyState {
 /// Tracks the currently registered hotkey so we can unregister it when changing.
 static CURRENT_HOTKEY: RwLock<Option<String>> = RwLock::new(None);
 
+fn is_wayland_session() -> bool {
+    let xdg_session_type = std::env::var("XDG_SESSION_TYPE").unwrap_or_default();
+    let wayland_display = std::env::var("WAYLAND_DISPLAY").unwrap_or_default();
+    xdg_session_type == "wayland" || !wayland_display.is_empty()
+}
+
+fn has_x11_display() -> bool {
+    std::env::var("DISPLAY")
+        .ok()
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false)
+}
+
 /// Register the hotkey based on current settings.
 /// This will unregister any previously registered hotkey first.
 pub async fn register(app: &AppHandle) -> tauri::Result<()> {
@@ -33,13 +46,33 @@ pub async fn register_shortcut(app: &AppHandle, shortcut: &str) -> tauri::Result
 
     let session_type = std::env::var("XDG_SESSION_TYPE").unwrap_or_else(|_| "unknown".into());
     info!(
-        "Registering hotkey: {} (session_type={})",
-        shortcut, session_type
+        "Registering hotkey: {} (session_type={}, display={})",
+        shortcut,
+        session_type,
+        std::env::var("DISPLAY").unwrap_or_default()
     );
 
-    register_evdev_shortcut(app, shortcut)?;
-    set_current_hotkey(shortcut);
-    let _ = app.emit("hotkey-backend", "evdev");
+    // Preferred backend selection:
+    // - Wayland: evdev (global hotkeys via /dev/input)
+    // - X11: X11 grabs (no /dev/input needed; works in VNC/Xvfb)
+    if !is_wayland_session() && has_x11_display() {
+        match register_x11_shortcut(app, shortcut) {
+            Ok(()) => {
+                set_current_hotkey(shortcut);
+                let _ = app.emit("hotkey-backend", "x11");
+            }
+            Err(error) => {
+                warn!("x11 hotkey registration failed: {error}");
+                register_evdev_shortcut(app, shortcut)?;
+                set_current_hotkey(shortcut);
+                let _ = app.emit("hotkey-backend", "evdev");
+            }
+        }
+    } else {
+        register_evdev_shortcut(app, shortcut)?;
+        set_current_hotkey(shortcut);
+        let _ = app.emit("hotkey-backend", "evdev");
+    }
     if let Some(state) = app.try_state::<AppState>() {
         state.set_hud_state(app, "idle");
     } else {
@@ -92,6 +125,7 @@ async fn unregister_current(_app: &AppHandle) -> tauri::Result<()> {
     let current = { CURRENT_HOTKEY.read().clone() };
     if current.is_some() {
         stop_evdev_listener();
+        stop_x11_listener();
     }
 
     {
@@ -703,6 +737,402 @@ mod linux_evdev {
     }
 }
 
+// -------------------------------------------------------------------------------------------------
+// Linux X11 backend (core grabs)
+// -------------------------------------------------------------------------------------------------
+
+mod linux_x11 {
+    use super::{handle_hotkey_state, HotkeyState};
+    use anyhow::Context;
+    use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
+    use std::thread;
+    use std::time::Duration;
+    use tauri::AppHandle;
+    use tracing::info;
+
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::{ConnectionExt as _, GrabMode, ModMask};
+    use x11rb::protocol::Event;
+
+    // Minimal X11 keysym constants we need.
+    // Values from X11/keysymdef.h.
+    const XK_SPACE: u32 = 0x0020;
+    const XK_TAB: u32 = 0xff09;
+    const XK_RETURN: u32 = 0xff0d;
+    const XK_ESCAPE: u32 = 0xff1b;
+
+    const XK_SHIFT_L: u32 = 0xffe1;
+    const XK_SHIFT_R: u32 = 0xffe2;
+    const XK_CONTROL_L: u32 = 0xffe3;
+    const XK_CONTROL_R: u32 = 0xffe4;
+    const XK_META_L: u32 = 0xffe7;
+    const XK_META_R: u32 = 0xffe8;
+    const XK_ALT_L: u32 = 0xffe9;
+    const XK_ALT_R: u32 = 0xffea;
+    const XK_SUPER_L: u32 = 0xffeb;
+    const XK_SUPER_R: u32 = 0xffec;
+
+    const XK_MODE_SWITCH: u32 = 0xff7e;
+    const XK_NUM_LOCK: u32 = 0xff7f;
+    const XK_ISO_LEVEL3_SHIFT: u32 = 0xfe03;
+
+    const XK_F1: u32 = 0xffbe;
+
+    pub(super) struct X11Listener {
+        stop_tx: Sender<()>,
+        thread: thread::JoinHandle<()>,
+    }
+
+    static X11_LISTENER: parking_lot::RwLock<Option<X11Listener>> =
+        parking_lot::RwLock::new(None);
+
+    #[derive(Debug, Clone, Copy)]
+    struct Modifiers {
+        ctrl: bool,
+        alt: bool,
+        shift: bool,
+        meta: bool,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    struct HotkeySpec {
+        keycode: u8,
+        required: u16,
+    }
+
+    pub(super) fn start(app: &AppHandle, shortcut: &str) -> anyhow::Result<()> {
+        stop();
+
+        let (mods, key_str) = parse_hotkey(shortcut)?;
+
+        let (conn, screen_num) = x11rb::connect(None).context("connect to X11")?;
+        let root = conn.setup().roots[screen_num].root;
+
+        // Resolve trigger keycode.
+        let keycode = keycode_for_key_string(&conn, key_str)?;
+
+        // Compute modifier masks from the server's modifier map so Alt/Meta work across layouts.
+        let modifier_map = ModifierMap::new(&conn)?;
+        let mut required_mask: u16 = 0;
+        if mods.shift {
+            required_mask |= u16::from(ModMask::SHIFT);
+        }
+        if mods.ctrl {
+            required_mask |= u16::from(ModMask::CONTROL);
+        }
+        if mods.alt {
+            required_mask |= u16::from(modifier_map.alt);
+        }
+        if mods.meta {
+            required_mask |= u16::from(modifier_map.meta);
+        }
+
+        // Grab the key. Include lock variants so the grab still works with CapsLock/NumLock.
+        let variants = modifier_map.lock_variants();
+        for extra in variants {
+            let mask_bits = required_mask | extra;
+            let mask = ModMask::from(mask_bits);
+            let _ = conn.grab_key(
+                false,
+                root,
+                mask,
+                keycode,
+                GrabMode::ASYNC,
+                GrabMode::ASYNC,
+            )?;
+        }
+
+        conn.flush()?;
+
+        info!(
+            "x11 hotkeys active: keycode={} required_mask=0x{:x}",
+            keycode, required_mask
+        );
+
+        let app_handle = app.clone();
+        let (stop_tx, stop_rx) = channel();
+        let thread = thread::Builder::new()
+            .name("x11-hotkeys".to_string())
+            .spawn(move || {
+                if let Err(error) = run_loop(conn, app_handle, HotkeySpec { keycode, required: required_mask }, stop_rx) {
+                    tracing::warn!("x11 hotkey listener stopped: {error:?}");
+                }
+            })?;
+
+        *X11_LISTENER.write() = Some(X11Listener { stop_tx, thread });
+        Ok(())
+    }
+
+    pub(super) fn stop() {
+        let listener = X11_LISTENER.write().take();
+        if let Some(listener) = listener {
+            let _ = listener.stop_tx.send(());
+            let _ = listener.thread.join();
+        }
+    }
+
+    pub(super) fn stop_from_parent() {
+        stop();
+    }
+
+    fn parse_hotkey(input: &str) -> anyhow::Result<(Modifiers, &str)> {
+        let parts: Vec<&str> = input
+            .split('+')
+            .map(|p| p.trim())
+            .filter(|p| !p.is_empty())
+            .collect();
+        if parts.is_empty() {
+            anyhow::bail!("hotkey is empty");
+        }
+
+        let (mods, key_str) = if parts.len() == 1 {
+            (Vec::new(), parts[0])
+        } else {
+            (parts[..parts.len() - 1].to_vec(), parts[parts.len() - 1])
+        };
+
+        let mut modifiers = Modifiers {
+            ctrl: false,
+            alt: false,
+            shift: false,
+            meta: false,
+        };
+        for m in mods {
+            match m {
+                "Ctrl" | "Control" => modifiers.ctrl = true,
+                "Alt" => modifiers.alt = true,
+                "Shift" => modifiers.shift = true,
+                "Meta" | "Super" | "Command" | "Logo" => modifiers.meta = true,
+                _ => {}
+            }
+        }
+
+        Ok((modifiers, key_str))
+    }
+
+    struct ModifierMap {
+        alt: ModMask,
+        meta: ModMask,
+        num: ModMask,
+        lock: ModMask,
+    }
+
+    impl ModifierMap {
+        fn new<C: Connection>(conn: &C) -> anyhow::Result<Self> {
+            let reply = conn
+                .get_modifier_mapping()
+                .context("get_modifier_mapping")?
+                .reply()
+                .context("read modifier mapping")?;
+
+            let keycodes_per_mod = reply.keycodes_per_modifier() as usize;
+            let mods = reply.keycodes;
+
+            let alt_code =
+                keycode_for_any_keysym(conn, &[XK_ALT_L, XK_ALT_R, XK_ISO_LEVEL3_SHIFT, XK_MODE_SWITCH]).ok();
+
+            let meta_code = keycode_for_any_keysym(conn, &[XK_SUPER_L, XK_SUPER_R, XK_META_L, XK_META_R]).ok();
+
+            let num_code = keycode_for_any_keysym(conn, &[XK_NUM_LOCK]).ok();
+
+            let mut alt = ModMask::M1;
+            let mut meta = ModMask::M4;
+            let mut num = ModMask::from(0u16);
+
+            for mod_index in 0..8 {
+                let start = mod_index * keycodes_per_mod;
+                let end = start + keycodes_per_mod;
+                let slice = &mods[start..end];
+                if alt_code.is_some() && slice.iter().any(|&c| c != 0 && Some(c) == alt_code) {
+                    alt = mask_for_index(mod_index);
+                }
+                if meta_code.is_some() && slice.iter().any(|&c| c != 0 && Some(c) == meta_code) {
+                    meta = mask_for_index(mod_index);
+                }
+                if num_code.is_some() && slice.iter().any(|&c| c != 0 && Some(c) == num_code) {
+                    num = mask_for_index(mod_index);
+                }
+            }
+
+            Ok(Self {
+                alt,
+                meta,
+                num,
+                lock: ModMask::LOCK,
+            })
+        }
+
+        fn lock_variants(&self) -> Vec<u16> {
+            let mut out = vec![0u16];
+            let lock: u16 = self.lock.into();
+            let num: u16 = self.num.into();
+            if lock != 0 {
+                out.push(lock);
+            }
+            if num != 0 {
+                out.push(num);
+            }
+            if lock != 0 && num != 0 {
+                out.push(lock | num);
+            }
+            out
+        }
+    }
+
+    fn mask_for_index(i: usize) -> ModMask {
+        match i {
+            0 => ModMask::SHIFT,
+            1 => ModMask::LOCK,
+            2 => ModMask::CONTROL,
+            3 => ModMask::M1,
+            4 => ModMask::M2,
+            5 => ModMask::M3,
+            6 => ModMask::M4,
+            7 => ModMask::M5,
+            _ => ModMask::from(0u16),
+        }
+    }
+
+    fn keycode_for_key_string<C: Connection>(conn: &C, key: &str) -> anyhow::Result<u8> {
+        let trimmed = key.trim();
+        if trimmed.is_empty() {
+            anyhow::bail!("missing hotkey key");
+        }
+
+        let upper = trimmed.to_ascii_uppercase().replace(' ', "");
+        let candidates: Vec<u32> = match upper.as_str() {
+            "SPACE" => vec![XK_SPACE],
+            "ENTER" | "RETURN" => vec![XK_RETURN],
+            "ESC" | "ESCAPE" => vec![XK_ESCAPE],
+            "TAB" => vec![XK_TAB],
+
+            "RIGHTALT" | "ALTRIGHT" => vec![XK_ALT_R, XK_ISO_LEVEL3_SHIFT, XK_MODE_SWITCH],
+            "LEFTALT" | "ALTLEFT" => vec![XK_ALT_L],
+            "RIGHTCTRL" | "CTRLRIGHT" | "CONTROLRIGHT" => vec![XK_CONTROL_R],
+            "LEFTCTRL" | "CTRLLEFT" | "CONTROLLEFT" => vec![XK_CONTROL_L],
+            "RIGHTSHIFT" | "SHIFTRIGHT" => vec![XK_SHIFT_R],
+            "LEFTSHIFT" | "SHIFTLEFT" => vec![XK_SHIFT_L],
+            "RIGHTMETA" | "METARIGHT" | "SUPERRIGHT" => vec![XK_SUPER_R, XK_META_R],
+            "LEFTMETA" | "METALEFT" | "SUPERLEFT" => vec![XK_SUPER_L, XK_META_L],
+            _ => {
+                // Function keys
+                if let Some(num) = upper.strip_prefix('F') {
+                    if let Ok(n) = num.parse::<u8>() {
+                        let base = XK_F1;
+                        if (1..=24).contains(&n) {
+                            return Ok(
+                                keycode_for_any_keysym(conn, &[base + (n as u32) - 1])
+                                    .context("resolve function key")?,
+                            );
+                        }
+                    }
+                }
+
+                // Single ASCII letter/digit
+                if upper.len() == 1 {
+                    let ch = upper.as_bytes()[0];
+                    return match ch {
+                        b'A'..=b'Z' => {
+                            let ks = (ch as u32) as u32;
+                            keycode_for_any_keysym(conn, &[ks])
+                        }
+                        b'0'..=b'9' => {
+                            let ks = (ch as u32) as u32;
+                            keycode_for_any_keysym(conn, &[ks])
+                        }
+                        _ => anyhow::bail!("Unsupported hotkey key: {trimmed}"),
+                    };
+                }
+
+                anyhow::bail!("Unsupported hotkey key: {trimmed}");
+            }
+        };
+
+        keycode_for_any_keysym(conn, &candidates)
+    }
+
+    fn keycode_for_any_keysym<C: Connection>(conn: &C, keysyms: &[u32]) -> anyhow::Result<u8> {
+        for &keysym in keysyms {
+            if let Some(code) = keycode_for_keysym(conn, keysym)? {
+                return Ok(code);
+            }
+        }
+        anyhow::bail!("no matching keycode found")
+    }
+
+    fn keycode_for_keysym<C: Connection>(conn: &C, keysym: u32) -> anyhow::Result<Option<u8>> {
+        let setup = conn.setup();
+        let min = setup.min_keycode;
+        let max = setup.max_keycode;
+        if max < min {
+            return Ok(None);
+        }
+
+        let count = u8::from(max) - u8::from(min) + 1;
+        let reply = conn
+            .get_keyboard_mapping(min, count)
+            .context("get_keyboard_mapping")?
+            .reply()
+            .context("read keyboard mapping")?;
+
+        let per = reply.keysyms_per_keycode as usize;
+        if per == 0 {
+            return Ok(None);
+        }
+
+        for (i, chunk) in reply.keysyms.chunks(per).enumerate() {
+            let keycode = u8::from(min) + i as u8;
+            if chunk.iter().any(|&k| k == keysym) {
+                return Ok(Some(keycode));
+            }
+        }
+
+        Ok(None)
+    }
+
+    fn run_loop<C: Connection>(
+        conn: C,
+        app: AppHandle,
+        spec: HotkeySpec,
+        stop_rx: Receiver<()>,
+    ) -> anyhow::Result<()> {
+        let mut is_pressed = false;
+        loop {
+            match stop_rx.try_recv() {
+                Ok(_) | Err(TryRecvError::Disconnected) => return Ok(()),
+                Err(TryRecvError::Empty) => {}
+            }
+
+            if let Some(event) = conn.poll_for_event()? {
+                match event {
+                    Event::KeyPress(ev) => {
+                        if ev.detail == spec.keycode {
+                            let state_bits: u16 = ev.state.into();
+                            if (state_bits & spec.required) == spec.required {
+                                if !is_pressed {
+                                    is_pressed = true;
+                                    handle_hotkey_state(&app, HotkeyState::Pressed);
+                                }
+                            }
+                        }
+                    }
+                    Event::KeyRelease(ev) => {
+                        if ev.detail == spec.keycode {
+                            if is_pressed {
+                                is_pressed = false;
+                                handle_hotkey_state(&app, HotkeyState::Released);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            } else {
+                thread::sleep(Duration::from_millis(8));
+            }
+        }
+    }
+}
+
 fn register_evdev_shortcut(app: &AppHandle, shortcut: &str) -> tauri::Result<()> {
     match linux_evdev::start(app, shortcut) {
         Ok(()) => Ok(()),
@@ -719,6 +1149,26 @@ fn register_evdev_shortcut(app: &AppHandle, shortcut: &str) -> tauri::Result<()>
     }
 }
 
+fn register_x11_shortcut(app: &AppHandle, shortcut: &str) -> tauri::Result<()> {
+    match linux_x11::start(app, shortcut) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            warn!("x11 hotkey registration failed: {error}");
+            let _ = app.emit(
+                "hotkey-error",
+                format!(
+                    "Failed to enable global hotkeys on X11. Ensure DISPLAY is set and XInput/XTEST are available on the X server. Error: {error}"
+                ),
+            );
+            Err(tauri::Error::from(anyhow::anyhow!(error.to_string())))
+        }
+    }
+}
+
 fn stop_evdev_listener() {
     linux_evdev::stop_from_parent();
+}
+
+fn stop_x11_listener() {
+    linux_x11::stop_from_parent();
 }

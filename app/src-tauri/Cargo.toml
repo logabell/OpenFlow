@@ -1,6 +1,6 @@
 [package]
 name = "openflow"
-version = "0.1.9"
+version = "0.1.10"
 description = "OpenFlow application backend"
 authors = ["OpenFlow Team"]
 license = "MIT"
@@ -51,6 +51,7 @@ zip = { version = "0.6", default-features = false, features = ["deflate"] }
 evdev = "0.12.2"
 inotify = "0.10.2"
 libc = "0.2"
+x11rb = { version = "0.13", features = ["xinput", "xtest"] }
 
 [features]
 default = ["audio", "hud", "models", "real-audio", "asr-ct2", "asr-sherpa", "webrtc-apm", "vad-silero"]

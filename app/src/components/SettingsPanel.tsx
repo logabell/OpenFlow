@@ -19,6 +19,10 @@ import HotkeyInput from "./HotkeyInput";
 type LinuxPermissionsStatus = {
   supported: boolean;
   waylandSession: boolean;
+  x11Session: boolean;
+  x11DisplayAvailable: boolean;
+  x11HotkeysAvailable: boolean;
+  x11XtestAvailable: boolean;
   xdgRuntimeDirAvailable: boolean;
   evdevReadable: boolean;
   uinputWritable: boolean;
@@ -1497,7 +1501,18 @@ const LinuxSetupSection = ({
     return null;
   }
 
-  const permissionsConfigured = status.evdevReadable && status.uinputWritable;
+  const hotkeysReady = status.waylandSession
+    ? status.evdevReadable
+    : status.x11Session
+      ? status.x11HotkeysAvailable
+      : false;
+  const injectionReady = status.waylandSession
+    ? status.uinputWritable
+    : status.x11Session
+      ? status.x11XtestAvailable
+      : false;
+
+  const permissionsConfigured = hotkeysReady && injectionReady;
   const clipboardToolsReady =
     status.clipboardBackend === "wayland"
       ? status.wlCopyAvailable && status.wlPasteAvailable && status.xdgRuntimeDirAvailable
@@ -1520,31 +1535,47 @@ const LinuxSetupSection = ({
             </span>
           </div>
           <div className="flex items-center justify-between">
+            <span className="text-muted">X11 session (DISPLAY)</span>
+            <span className={status.x11Session ? "text-good" : "text-warn"}>
+              {status.x11Session ? "ready" : "not detected"}
+            </span>
+          </div>
+          <div className="flex items-center justify-between">
             <span className="text-muted">Runtime dir (XDG_RUNTIME_DIR)</span>
             <span
               className={
-                status.xdgRuntimeDirAvailable
-                  ? "text-good"
-                  : "text-warn"
+                status.waylandSession
+                  ? status.xdgRuntimeDirAvailable
+                    ? "text-good"
+                    : "text-warn"
+                  : "text-muted"
               }
             >
-              {status.xdgRuntimeDirAvailable ? "ready" : "missing"}
+              {status.waylandSession
+                ? status.xdgRuntimeDirAvailable
+                  ? "ready"
+                  : "missing"
+                : "n/a"}
             </span>
           </div>
           <div className="flex items-center justify-between">
-            <span className="text-muted">Global hotkeys (/dev/input)</span>
+            <span className="text-muted">
+              Global hotkeys ({status.waylandSession ? "/dev/input" : "X11"})
+            </span>
             <span
-              className={status.evdevReadable ? "text-good" : "text-warn"}
+              className={hotkeysReady ? "text-good" : "text-warn"}
             >
-              {status.evdevReadable ? "ready" : "needs permission"}
+              {hotkeysReady ? "ready" : status.waylandSession ? "needs permission" : "unavailable"}
             </span>
           </div>
           <div className="flex items-center justify-between">
-            <span className="text-muted">Paste injection (/dev/uinput)</span>
+            <span className="text-muted">
+              Paste injection ({status.waylandSession ? "/dev/uinput" : "XTEST"})
+            </span>
             <span
-              className={status.uinputWritable ? "text-good" : "text-warn"}
+              className={injectionReady ? "text-good" : "text-warn"}
             >
-              {status.uinputWritable ? "ready" : "needs permission"}
+              {injectionReady ? "ready" : status.waylandSession ? "needs permission" : "unavailable"}
             </span>
           </div>
           <div className="flex items-center justify-between">
@@ -1563,12 +1594,16 @@ const LinuxSetupSection = ({
             <span className="text-muted">One-click setup (polkit + acl)</span>
             <span
               className={
-                status.pkexecAvailable && status.setfaclAvailable
+                !status.waylandSession || (status.pkexecAvailable && status.setfaclAvailable)
                   ? "text-good"
                   : "text-warn"
               }
             >
-              {status.pkexecAvailable && status.setfaclAvailable ? "ready" : "missing"}
+              {!status.waylandSession
+                ? "not required"
+                : status.pkexecAvailable && status.setfaclAvailable
+                  ? "ready"
+                  : "missing"}
             </span>
           </div>
         </div>
@@ -1613,42 +1648,51 @@ const LinuxSetupSection = ({
           >
             Refresh
           </Button>
-          <Button
-            variant="primary"
-            onClick={() => {
-              void onEnable();
-            }}
-            disabled={
-              busy ||
-              !status.pkexecAvailable ||
-              !status.setfaclAvailable ||
-              permissionsConfigured
-            }
-            title={
-              !status.pkexecAvailable
-                ? "pkexec not available"
-                : !status.setfaclAvailable
-                  ? "Install acl (setfacl) to enable setup"
-                  : permissionsConfigured
-                    ? "Already configured"
-                    : "Requires admin approval"
-            }
-          >
-            {busy ? "Applying…" : permissionsConfigured ? "Configured" : "Enable (admin)"}
-          </Button>
-          {!status.pkexecAvailable && (
-            <span className="self-center text-xs text-warn">
-              Install polkit to enable one-click setup.
-            </span>
-          )}
-          {status.pkexecAvailable && !status.setfaclAvailable && (
-            <span className="self-center text-xs text-warn">
-              Install acl (setfacl) to enable one-click setup.
+
+          {status.waylandSession ? (
+            <>
+              <Button
+                variant="primary"
+                onClick={() => {
+                  void onEnable();
+                }}
+                disabled={
+                  busy ||
+                  !status.pkexecAvailable ||
+                  !status.setfaclAvailable ||
+                  permissionsConfigured
+                }
+                title={
+                  !status.pkexecAvailable
+                    ? "pkexec not available"
+                    : !status.setfaclAvailable
+                      ? "Install acl (setfacl) to enable setup"
+                      : permissionsConfigured
+                        ? "Already configured"
+                        : "Requires admin approval"
+                }
+              >
+                {busy ? "Applying…" : permissionsConfigured ? "Configured" : "Enable (admin)"}
+              </Button>
+              {!status.pkexecAvailable && (
+                <span className="self-center text-xs text-warn">
+                  Install polkit to enable one-click setup.
+                </span>
+              )}
+              {status.pkexecAvailable && !status.setfaclAvailable && (
+                <span className="self-center text-xs text-warn">
+                  Install acl (setfacl) to enable one-click setup.
+                </span>
+              )}
+            </>
+          ) : (
+            <span className="self-center text-xs text-muted">
+              Admin setup not required on X11.
             </span>
           )}
         </div>
 
-        {!permissionsConfigured && (
+        {status.waylandSession && !permissionsConfigured && (
           <p className="text-xs text-muted">
             After enabling, log out and back in so group membership takes effect.
           </p>
@@ -1656,7 +1700,7 @@ const LinuxSetupSection = ({
 
         {!pasteReady && (
           <p className="text-xs text-muted">
-            Paste to active app requires clipboard tooling and /dev/uinput access.
+            Paste to active app requires clipboard tooling and{status.waylandSession ? " /dev/uinput access" : " XTEST"}.
           </p>
         )}
       </Card>

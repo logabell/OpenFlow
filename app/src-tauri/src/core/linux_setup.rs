@@ -5,6 +5,10 @@ use serde::Serialize;
 pub struct LinuxPermissionsStatus {
     pub supported: bool,
     pub wayland_session: bool,
+    pub x11_session: bool,
+    pub x11_display_available: bool,
+    pub x11_hotkeys_available: bool,
+    pub x11_xtest_available: bool,
     pub xdg_runtime_dir_available: bool,
     pub evdev_readable: bool,
     pub uinput_writable: bool,
@@ -38,23 +42,51 @@ pub fn permissions_status() -> LinuxPermissionsStatus {
         .map(|value| std::path::Path::new(&value).is_dir())
         .unwrap_or(false);
 
-    let evdev_readable = match check_evdev_keyboard_access() {
-        Ok(()) => true,
-        Err(message) => {
-            details.push(message);
-            false
+    let display = std::env::var("DISPLAY").unwrap_or_default();
+    let x11_session = !wayland_session && !display.trim().is_empty();
+
+    let (x11_display_available, x11_hotkeys_available, x11_xtest_available) = if x11_session {
+        match check_x11_capabilities() {
+            Ok((display_ok, xtest_ok)) => {
+                if display_ok && !xtest_ok {
+                    details.push("Missing XTEST (X11 paste injection may not work)".to_string());
+                }
+                // Hotkeys use core X11 grabs (no /dev/input needed). If we can connect, we can at
+                // least attempt grabs.
+                (display_ok, display_ok, xtest_ok)
+            }
+            Err(message) => {
+                details.push(message);
+                (false, false, false)
+            }
         }
+    } else {
+        (false, false, false)
     };
 
-    let uinput_writable = match check_uinput_access() {
-        Ok(()) => true,
-        Err(message) => {
-            details.push(message);
-            if let Some(hint) = diagnose_uinput_acl_hint() {
-                details.push(hint);
+    let (evdev_readable, uinput_writable) = if wayland_session {
+        let evdev_readable = match check_evdev_keyboard_access() {
+            Ok(()) => true,
+            Err(message) => {
+                details.push(message);
+                false
             }
-            false
-        }
+        };
+
+        let uinput_writable = match check_uinput_access() {
+            Ok(()) => true,
+            Err(message) => {
+                details.push(message);
+                if let Some(hint) = diagnose_uinput_acl_hint() {
+                    details.push(hint);
+                }
+                false
+            }
+        };
+
+        (evdev_readable, uinput_writable)
+    } else {
+        (false, false)
     };
 
     let wl_copy_available = binary_in_path("wl-copy");
@@ -80,18 +112,22 @@ pub fn permissions_status() -> LinuxPermissionsStatus {
     }
 
     let pkexec_available = binary_in_path("pkexec");
-    if !pkexec_available {
+    if wayland_session && !pkexec_available {
         details.push("Missing pkexec (install polkit)".to_string());
     }
 
     let setfacl_available = binary_in_path("setfacl");
-    if !setfacl_available {
+    if wayland_session && !setfacl_available {
         details.push("Missing setfacl (install acl)".to_string());
     }
 
     LinuxPermissionsStatus {
         supported: true,
         wayland_session,
+        x11_session,
+        x11_display_available,
+        x11_hotkeys_available,
+        x11_xtest_available,
         xdg_runtime_dir_available,
         evdev_readable,
         uinput_writable,
@@ -103,6 +139,26 @@ pub fn permissions_status() -> LinuxPermissionsStatus {
         setfacl_available,
         details,
     }
+}
+
+fn check_x11_capabilities() -> Result<(bool, bool), String> {
+    use x11rb::protocol::xproto::ConnectionExt as _;
+
+    let display = std::env::var("DISPLAY").unwrap_or_default();
+    if display.trim().is_empty() {
+        return Ok((false, false));
+    }
+
+    let (conn, _) =
+        x11rb::connect(None).map_err(|err| format!("Failed to connect to X11: {err}"))?;
+
+    let xtest = conn
+        .query_extension(b"XTEST")
+        .map_err(|err| format!("Failed to query XTEST extension: {err}"))?
+        .reply()
+        .map_err(|err| format!("Failed to read XTEST extension reply: {err}"))?;
+
+    Ok((true, xtest.present))
 }
 
 fn diagnose_uinput_acl_hint() -> Option<String> {

@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 use crate::output::uinput;
+use crate::output::x11;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -168,7 +169,7 @@ fn paste_text(text: &str, shortcut: PasteShortcut) -> Result<(), PasteFailure> {
         });
     }
 
-    if let Err(error) = uinput::send_paste(shortcut) {
+    if let Err(error) = send_paste_chord(shortcut) {
         // Keep transcript on the clipboard so the user can paste manually.
         let _ = set_clipboard_text(text);
         return Err(PasteFailure {
@@ -213,6 +214,32 @@ fn paste_text(text: &str, shortcut: PasteShortcut) -> Result<(), PasteFailure> {
     })?;
 
     Ok(())
+}
+
+fn is_wayland_session() -> bool {
+    let xdg_session_type = std::env::var("XDG_SESSION_TYPE").unwrap_or_default();
+    let wayland_display = std::env::var("WAYLAND_DISPLAY").unwrap_or_default();
+    xdg_session_type == "wayland" || !wayland_display.is_empty()
+}
+
+fn send_paste_chord(shortcut: PasteShortcut) -> anyhow::Result<()> {
+    if is_wayland_session() {
+        return uinput::send_paste(shortcut);
+    }
+
+    // Prefer X11 injection on X11 sessions (e.g. VNC/Xvfb).
+    match x11::send_paste(shortcut) {
+        Ok(()) => Ok(()),
+        Err(x11_err) => {
+            // Fall back to uinput if available.
+            match uinput::send_paste(shortcut) {
+                Ok(()) => Ok(()),
+                Err(uinput_err) => anyhow::bail!(
+                    "X11 injection failed: {x11_err}; uinput injection failed: {uinput_err}"
+                ),
+            }
+        }
+    }
 }
 
 impl PasteFailureKind {
