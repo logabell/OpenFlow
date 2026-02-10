@@ -62,7 +62,12 @@ cat > "$STAGE/openflow/openflow" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_PATH="${BASH_SOURCE[0]}"
+if command -v readlink >/dev/null 2>&1; then
+  SCRIPT_PATH="$(readlink -f "$SCRIPT_PATH" 2>/dev/null || printf '%s' "$SCRIPT_PATH")"
+fi
+
+DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 export LD_LIBRARY_PATH="$DIR/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 exec "$DIR/openflow-bin" "$@"
 EOF

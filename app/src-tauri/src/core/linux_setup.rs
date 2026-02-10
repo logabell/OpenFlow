@@ -141,9 +141,9 @@ fn diagnose_uinput_acl_hint() -> Option<String> {
 }
 
 pub fn enable_permissions_for_current_user() -> anyhow::Result<()> {
-    let user = std::env::var("USER").unwrap_or_default();
+    let user = current_username().unwrap_or_default();
     if user.is_empty() {
-        anyhow::bail!("Could not determine current user (USER env var missing)");
+        anyhow::bail!("Could not determine current user (unable to resolve username)");
     }
 
     // Restrict to typical Unix usernames to avoid passing unsafe values to a root shell.
@@ -223,6 +223,59 @@ fi
     }
 
     Ok(())
+}
+
+fn current_username() -> Option<String> {
+    // Avoid relying on $USER, which may be missing in clean/sandboxed environments.
+    if let Ok(u) = std::env::var("USER") {
+        if !u.trim().is_empty() {
+            return Some(u);
+        }
+    }
+
+    username_from_uid(unsafe { libc::getuid() })
+}
+
+fn username_from_uid(uid: libc::uid_t) -> Option<String> {
+    // getpwuid_r is the most reliable way to map uid -> username.
+    // This follows the POSIX pattern with a dynamically sized buffer.
+    unsafe {
+        let mut pwd: libc::passwd = std::mem::zeroed();
+        let mut result: *mut libc::passwd = std::ptr::null_mut();
+
+        let mut buf_len = libc::sysconf(libc::_SC_GETPW_R_SIZE_MAX);
+        if buf_len < 0 {
+            buf_len = 16 * 1024;
+        }
+
+        // Cap the buffer to a reasonable size to avoid huge allocations.
+        let buf_len = (buf_len as usize).min(1024 * 1024);
+        let mut buf = vec![0u8; buf_len];
+
+        let rc = libc::getpwuid_r(
+            uid,
+            &mut pwd,
+            buf.as_mut_ptr() as *mut libc::c_char,
+            buf.len(),
+            &mut result,
+        );
+        if rc != 0 || result.is_null() {
+            return None;
+        }
+
+        let name_ptr = pwd.pw_name;
+        if name_ptr.is_null() {
+            return None;
+        }
+
+        let cstr = std::ffi::CStr::from_ptr(name_ptr);
+        let s = cstr.to_string_lossy().trim().to_string();
+        if s.is_empty() {
+            None
+        } else {
+            Some(s)
+        }
+    }
 }
 
 fn check_evdev_keyboard_access() -> Result<(), String> {

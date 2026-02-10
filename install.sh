@@ -96,9 +96,25 @@ if [ "$(id -u)" -eq 0 ]; then
   die "do not run as root; run as a normal user (the installer uses sudo when needed)"
 fi
 
-USER_NAME="${USER:-}"
+detect_user_name() {
+  local u=""
+
+  u="$(id -un 2>/dev/null || true)"
+  if [ -z "$u" ] && command -v getent >/dev/null 2>&1; then
+    u="$(getent passwd "$(id -u 2>/dev/null || true)" 2>/dev/null | awk -F: 'NR==1{print $1; exit}' || true)"
+  fi
+
+  # Fallback only; some environments intentionally clear USER.
+  if [ -z "$u" ]; then
+    u="${USER:-}"
+  fi
+
+  printf '%s\n' "$u"
+}
+
+USER_NAME="$(detect_user_name)"
 if [ -z "$USER_NAME" ]; then
-  die "could not determine current user (USER env var missing)"
+  die "could not determine current user (unable to resolve username)"
 fi
 if [[ ! "$USER_NAME" =~ ^[a-zA-Z0-9_.-]+$ ]]; then
   die "invalid username: $USER_NAME"
@@ -192,7 +208,8 @@ install_deps() {
     apt)
       sudo_run env DEBIAN_FRONTEND=noninteractive apt-get update
 
-      pm_install apt wl-clipboard xclip policykit-1 acl bzip2 curl ca-certificates libgtk-3-0
+      # kmod provides modprobe (used for uinput setup).
+      pm_install apt wl-clipboard xclip policykit-1 acl bzip2 curl ca-certificates libgtk-3-0 kmod
 
       if ! pm_install_any apt libevdev2t64 libevdev2; then
         die "failed to install libevdev runtime (tried libevdev2t64, libevdev2)"
@@ -219,7 +236,7 @@ install_deps() {
       fi
       ;;
     dnf)
-      pm_install dnf wl-clipboard xclip polkit acl bzip2 curl ca-certificates alsa-lib gtk3 webkit2gtk4.1 libevdev
+      pm_install dnf wl-clipboard xclip polkit acl bzip2 curl ca-certificates alsa-lib gtk3 webkit2gtk4.1 libevdev kmod
 
       if ! have_appindicator_libs; then
         pm_install_any dnf libayatana-appindicator-gtk3 libappindicator-gtk3 || die "failed to install appindicator runtime (tried libayatana-appindicator-gtk3, libappindicator-gtk3)"
@@ -229,7 +246,7 @@ install_deps() {
       fi
       ;;
     pacman)
-      pm_install pacman wl-clipboard xclip polkit acl bzip2 curl ca-certificates alsa-lib gtk3 webkit2gtk-4.1 libevdev
+      pm_install pacman wl-clipboard xclip polkit acl bzip2 curl ca-certificates alsa-lib gtk3 webkit2gtk-4.1 libevdev kmod
 
       if ! have_appindicator_libs; then
         pm_install_any pacman libayatana-appindicator libappindicator || die "failed to install appindicator runtime (tried libayatana-appindicator, libappindicator)"
@@ -239,7 +256,7 @@ install_deps() {
       fi
       ;;
     zypper)
-      pm_install zypper wl-clipboard xclip polkit acl bzip2 curl ca-certificates gtk3
+      pm_install zypper wl-clipboard xclip polkit acl bzip2 curl ca-certificates gtk3 kmod
 
       if ! pm_install_any zypper libevdev2 libevdev; then
         die "failed to install libevdev runtime (tried libevdev2, libevdev)"
@@ -271,6 +288,43 @@ install_deps() {
       return 1
       ;;
   esac
+}
+
+repair_installed_launcher() {
+  # Older payloads used ${BASH_SOURCE[0]} directly; that breaks when invoked via a symlink
+  # (e.g. /usr/local/bin/openflow -> /opt/openflow/openflow), causing it to look for
+  # openflow-bin in /usr/local/bin.
+  if ! sudo_run test -f "$INSTALL_DIR/openflow"; then
+    return 0
+  fi
+
+  if ! sudo_run grep -q "openflow-bin" "$INSTALL_DIR/openflow" 2>/dev/null; then
+    return 0
+  fi
+
+  if sudo_run grep -q "readlink -f" "$INSTALL_DIR/openflow" 2>/dev/null; then
+    return 0
+  fi
+
+  if ! sudo_run grep -q "BASH_SOURCE" "$INSTALL_DIR/openflow" 2>/dev/null; then
+    return 0
+  fi
+
+  echo "Patching launcher for symlink-safe execution..." >&2
+  sudo_run tee "$INSTALL_DIR/openflow" >/dev/null <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_PATH="${BASH_SOURCE[0]}"
+if command -v readlink >/dev/null 2>&1; then
+  SCRIPT_PATH="$(readlink -f "$SCRIPT_PATH" 2>/dev/null || printf '%s' "$SCRIPT_PATH")"
+fi
+
+DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+export LD_LIBRARY_PATH="$DIR/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+exec "$DIR/openflow-bin" "$@"
+EOF
+  sudo_run chmod 0755 "$INSTALL_DIR/openflow"
 }
 
 validate_runtime_links() {
@@ -342,9 +396,78 @@ install_app_tarball() {
   sudo_run chown -R root:root "$INSTALL_DIR"
   sudo_run chmod 0755 "$INSTALL_DIR/openflow" "$INSTALL_DIR/openflow-bin"
 
+  repair_installed_launcher
+
   rm -rf "$tmp"
 
   validate_runtime_links
+}
+
+ensure_uinput_available() {
+  # Best-effort: attempt to make /dev/uinput available on common distros.
+  # This can legitimately fail in containers/WSL/custom kernels.
+  if [ -c /dev/uinput ]; then
+    return 0
+  fi
+
+  local pm
+  pm="$(detect_package_manager)"
+
+  # Ensure modprobe exists.
+  if ! command -v modprobe >/dev/null 2>&1; then
+    case "$pm" in
+      apt) pm_install apt kmod || true ;;
+      dnf) pm_install dnf kmod || true ;;
+      pacman) pm_install pacman kmod || true ;;
+      zypper) pm_install zypper kmod || true ;;
+    esac
+  fi
+
+  if command -v modprobe >/dev/null 2>&1; then
+    sudo_run modprobe uinput 2>/dev/null || true
+  fi
+
+  if [ -c /dev/uinput ]; then
+    return 0
+  fi
+
+  local uname_r
+  uname_r="$(uname -r)"
+
+  case "$pm" in
+    apt)
+      # Ubuntu/Debian commonly ship uinput in linux-modules-extra.
+      pm_install apt "linux-modules-extra-$uname_r" || true
+      ;;
+    dnf)
+      # Fedora/RHEL-like may split additional modules.
+      pm_install_any dnf kernel-modules-extra "kernel-modules-extra-$uname_r" || true
+      ;;
+    zypper)
+      # openSUSE often uses kernel-<flavor>-extra.
+      local flavor
+      flavor="${uname_r##*-}"
+      pm_install_any zypper "kernel-${flavor}-extra" kernel-default-extra kernel-desktop-extra || true
+      ;;
+    pacman)
+      # Arch typically includes uinput with the running kernel package.
+      ;;
+  esac
+
+  if command -v modprobe >/dev/null 2>&1; then
+    sudo_run modprobe uinput 2>/dev/null || true
+  fi
+
+  if [ -c /dev/uinput ]; then
+    return 0
+  fi
+
+  echo "Warning: /dev/uinput is not available. Global hotkeys and paste injection may not work." >&2
+  if [ "$pm" = "pacman" ]; then
+    echo "On Arch, ensure the kernel package for $(uname -r) is installed (e.g. linux/linux-lts) and includes uinput." >&2
+  fi
+  echo "Diagnostics: uname -r=$(uname -r); try: sudo modprobe uinput" >&2
+  return 1
 }
 
 install_symlink() {
@@ -485,9 +608,7 @@ PY
     added_to_input_group=1
   fi
 
-  if command -v modprobe >/dev/null 2>&1; then
-    sudo_run modprobe uinput || true
-  fi
+  ensure_uinput_available || true
 
   if [ -e /dev/uinput ]; then
     sudo_run chgrp input /dev/uinput || true
