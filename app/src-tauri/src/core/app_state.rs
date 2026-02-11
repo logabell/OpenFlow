@@ -15,8 +15,8 @@ use crate::models::{
 };
 use crate::output::PasteShortcut;
 use crate::vad::VadConfig;
-use tauri::{AppHandle, Manager, PhysicalPosition, WebviewWindowBuilder};
 use tauri::WebviewUrl;
+use tauri::{AppHandle, Manager, PhysicalPosition, WebviewWindowBuilder};
 use tracing::{debug, warn};
 
 use super::pipeline::{OutputMode, SpeechPipeline};
@@ -114,7 +114,31 @@ impl AppState {
             let mut guard = self.hud_state.lock();
             *guard = state.to_string();
         }
+        publish_hud_runtime_state(self, state);
         events::emit_hud_state(app, state);
+    }
+
+    pub fn sync_hud_overlay_mode(&self, app: &AppHandle) {
+        let hud_state = { self.hud_state.lock().clone() };
+        publish_hud_runtime_state(self, &hud_state);
+
+        if !window_overlay_supported() {
+            hide_status_overlay(app);
+            return;
+        }
+
+        let show_overlay = self
+            .settings_manager()
+            .read_frontend()
+            .map(|settings| settings.show_hud_overlay)
+            .unwrap_or(false);
+
+        if !show_overlay || hud_state == "idle" {
+            hide_status_overlay(app);
+            return;
+        }
+
+        show_status_overlay(app);
     }
 
     pub fn replay_hud_state(&self, app: &AppHandle) {
@@ -203,10 +227,7 @@ impl AppState {
                     );
                 }
                 Err(error) => {
-                    tracing::info!(
-                        "asr_warmup_failed model={selection_label} error={}",
-                        error
-                    );
+                    tracing::info!("asr_warmup_failed model={selection_label} error={}", error);
                 }
             }
         });
@@ -223,19 +244,25 @@ impl AppState {
     }
 
     pub fn start_session_with_overlay(&self, app: &AppHandle, show_overlay: bool) {
+        let use_window_overlay = show_overlay && window_overlay_supported();
+
         match self.asr_warmup_state() {
             AsrWarmupState::Warming => {
                 tracing::info!("hotkey_ignored_engine_warming");
-                if show_overlay {
+                if use_window_overlay {
                     show_status_overlay(app);
+                } else {
+                    hide_status_overlay(app);
                 }
                 self.set_hud_state(app, "warming");
                 return;
             }
             AsrWarmupState::Error => {
                 tracing::warn!("hotkey_ignored_engine_error");
-                if show_overlay {
+                if use_window_overlay {
                     show_status_overlay(app);
+                } else {
+                    hide_status_overlay(app);
                 }
                 self.set_hud_state(app, "asr-error");
                 return;
@@ -264,7 +291,7 @@ impl AppState {
             pipeline.set_listening(true);
         }
 
-        if show_overlay {
+        if use_window_overlay {
             show_status_overlay(app);
         } else if app.get_webview_window("status-overlay").is_some() {
             // Make sure a previously-shown overlay can't steal focus/cancel input
@@ -339,11 +366,23 @@ impl AppState {
                 *guard = SessionState::Idle;
             }
 
-            hide_status_overlay(&app_handle);
             if let Some(state) = app_handle.try_state::<AppState>() {
                 state.set_hud_state(&app_handle, "idle");
+
+                // Let the frontend play a short exit animation before hiding the
+                // overlay window. Guard against races with a new dictation start.
+                tokio::time::sleep(std::time::Duration::from_millis(260)).await;
+                let still_idle = {
+                    let hud = state.hud_state.lock();
+                    hud.as_str() == "idle"
+                };
+                if still_idle {
+                    hide_status_overlay(&app_handle);
+                }
             } else {
                 events::emit_hud_state(&app_handle, "idle");
+                tokio::time::sleep(std::time::Duration::from_millis(260)).await;
+                hide_status_overlay(&app_handle);
             }
         });
     }
@@ -352,7 +391,6 @@ impl AppState {
         events::emit_secure_blocked(app);
         self.complete_session(app);
     }
-
 
     pub fn set_output_mode(&self, mode: OutputMode) -> Result<()> {
         let guard = self.pipeline.lock();
@@ -417,8 +455,12 @@ impl AppState {
         let audio_config = AudioPipelineConfig {
             device_id: settings.audio_device_id.clone(),
         };
-        let pipeline =
-            SpeechPipeline::new(app.clone(), audio_config, vad_config.clone(), desired_asr_config);
+        let pipeline = SpeechPipeline::new(
+            app.clone(),
+            audio_config,
+            vad_config.clone(),
+            desired_asr_config,
+        );
         pipeline.set_mode(parse_autoclean_mode(&settings.autoclean_mode));
         pipeline.set_vad_config(vad_config);
         pipeline.set_paste_shortcut(desired_paste_shortcut);
@@ -460,9 +502,8 @@ impl AppState {
 
                 let dir = asset.path(&root);
                 if let Err(error) = crate::models::prepare_ct2_model_dir(&dir) {
-                    asset.status = ModelStatus::Error(format!(
-                        "CT2 model invalid on disk: {error}"
-                    ));
+                    asset.status =
+                        ModelStatus::Error(format!("CT2 model invalid on disk: {error}"));
                     snapshots.push(asset.clone());
                 }
             }
@@ -489,7 +530,9 @@ impl AppState {
                 }
             };
 
-            let parakeet_asset = guard.primary_asset(&ModelKind::Parakeet).map(|a| a.name.clone());
+            let parakeet_asset = guard
+                .primary_asset(&ModelKind::Parakeet)
+                .map(|a| a.name.clone());
             let parakeet_missing = parakeet_asset
                 .as_ref()
                 .and_then(|name| guard.asset_by_name(name))
@@ -581,13 +624,12 @@ impl AppState {
             _ => "int8".to_string(),
         };
 
-        let (language, auto_language_detect) = if settings.asr_family == "whisper"
-            && settings.whisper_model_language == "en"
-        {
-            ("en".to_string(), false)
-        } else {
-            (settings.language.clone(), settings.auto_detect_language)
-        };
+        let (language, auto_language_detect) =
+            if settings.asr_family == "whisper" && settings.whisper_model_language == "en" {
+                ("en".to_string(), false)
+            } else {
+                (settings.language.clone(), settings.auto_detect_language)
+            };
 
         AsrConfig {
             backend,
@@ -618,24 +660,21 @@ impl AppState {
             AsrBackend::Parakeet => (ModelKind::Parakeet, None),
         };
 
-        self.models
-            .lock()
-            .ok()
-            .and_then(|guard| {
-                let asset = if let Some(name) = asset_name {
-                    guard.asset_by_name(&name)
-                } else {
-                    guard.primary_asset(&kind)
-                };
+        self.models.lock().ok().and_then(|guard| {
+            let asset = if let Some(name) = asset_name {
+                guard.asset_by_name(&name)
+            } else {
+                guard.primary_asset(&kind)
+            };
 
-                asset.and_then(|asset| {
-                    if matches!(asset.status, ModelStatus::Installed) {
-                        Some(asset.path(guard.root()))
-                    } else {
-                        None
-                    }
-                })
+            asset.and_then(|asset| {
+                if matches!(asset.status, ModelStatus::Installed) {
+                    Some(asset.path(guard.root()))
+                } else {
+                    None
+                }
             })
+        })
     }
 
     pub fn uninstall_model(&self, app: &AppHandle, asset_name: &str) -> Result<()> {
@@ -651,7 +690,6 @@ impl AppState {
         self.reload_pipeline(app)?;
         Ok(())
     }
-
 }
 
 fn parse_autoclean_mode(value: &str) -> AutocleanMode {
@@ -718,6 +756,60 @@ fn parse_paste_shortcut(value: &str) -> PasteShortcut {
     }
 }
 
+fn publish_hud_runtime_state(state: &AppState, hud_state: &str) {
+    let overlay_enabled = state
+        .settings_manager()
+        .read_frontend()
+        .map(|settings| settings.show_hud_overlay)
+        .unwrap_or(false)
+        && is_gnome_wayland_session();
+
+    let path = match hud_runtime_state_path() {
+        Some(path) => path,
+        None => return,
+    };
+
+    if let Some(parent) = path.parent() {
+        if let Err(error) = std::fs::create_dir_all(parent) {
+            tracing::debug!("failed creating runtime hud dir: {error}");
+            return;
+        }
+    }
+
+    let payload = serde_json::json!({
+        "enabled": overlay_enabled,
+        "state": hud_state,
+    });
+
+    if let Err(error) = std::fs::write(&path, payload.to_string()) {
+        tracing::debug!("failed writing runtime hud state: {error}");
+    }
+}
+
+fn hud_runtime_state_path() -> Option<std::path::PathBuf> {
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .map(std::path::PathBuf::from)
+        .map(|base| base.join("openflow").join("hud-state.json"))
+}
+
+fn window_overlay_supported() -> bool {
+    !is_gnome_wayland_session()
+}
+
+fn is_gnome_wayland_session() -> bool {
+    let session = std::env::var("XDG_SESSION_TYPE").unwrap_or_default();
+    if !session.eq_ignore_ascii_case("wayland") {
+        return false;
+    }
+
+    let desktop = std::env::var("XDG_CURRENT_DESKTOP")
+        .or_else(|_| std::env::var("DESKTOP_SESSION"))
+        .unwrap_or_default();
+    desktop
+        .split(':')
+        .any(|segment| segment.eq_ignore_ascii_case("gnome"))
+}
+
 /// Show the status overlay window positioned at the bottom center of the screen
 fn show_status_overlay(app: &AppHandle) {
     tracing::info!("Showing status overlay window");
@@ -748,10 +840,10 @@ fn show_status_overlay(app: &AppHandle) {
         .decorations(false)
         .transparent(true)
         .always_on_top(true)
-        .visible(false)  // Start hidden to avoid GTK assertions during realization
+        .visible(false) // Start hidden to avoid GTK assertions during realization
         .skip_taskbar(true)
         .resizable(false)
-        .inner_size(560.0, 180.0)
+        .inner_size(220.0, 180.0)
         .focused(false)
         .focusable(false)
         .visible_on_all_workspaces(true)
@@ -786,9 +878,9 @@ fn position_overlay_deferred(window: tauri::WebviewWindow, show_after: bool) {
 
         if let Some(monitor) = monitor {
             let size = monitor.size();
-            let overlay_width = 560i32;
+            let overlay_width = 220i32;
             let overlay_height = 180i32;
-            let margin_bottom = 80i32;
+            let margin_bottom = 54i32;
             let x = (size.width as i32 - overlay_width) / 2;
             let y = size.height as i32 - overlay_height - margin_bottom;
             tracing::debug!("Positioning overlay at ({}, {})", x, y);
@@ -868,10 +960,7 @@ async fn warmup_current_asr(app: &AppHandle, generation: u64) -> Result<()> {
     // Helper: only update state if this task is still current.
     let is_current = |app: &AppHandle| {
         let state = app.state::<AppState>();
-        state
-            .asr_warmup_generation
-            .load(Ordering::SeqCst)
-            == generation
+        state.asr_warmup_generation.load(Ordering::SeqCst) == generation
     };
 
     // Attempt warmup for the currently-selected settings.
@@ -938,10 +1027,7 @@ async fn warmup_current_asr(app: &AppHandle, generation: u64) -> Result<()> {
 async fn warmup_selected_asr(app: &AppHandle, generation: u64) -> Result<()> {
     let is_current = |app: &AppHandle| {
         let state = app.state::<AppState>();
-        state
-            .asr_warmup_generation
-            .load(Ordering::SeqCst)
-            == generation
+        state.asr_warmup_generation.load(Ordering::SeqCst) == generation
     };
 
     // Snapshot settings for this warmup.
@@ -1004,7 +1090,9 @@ async fn warmup_selected_asr(app: &AppHandle, generation: u64) -> Result<()> {
         tracker.warmed_selection = Some(selection.clone());
         tracker.target_selection = Some(selection.clone());
         tracker.last_error = None;
-        let _ = state.settings_manager().write_last_known_good_asr(selection);
+        let _ = state
+            .settings_manager()
+            .write_last_known_good_asr(selection);
     }
 
     Ok(())
@@ -1017,10 +1105,7 @@ async fn ensure_asr_assets_ready(
 ) -> Result<()> {
     let is_current = |app: &AppHandle| {
         let state = app.state::<AppState>();
-        state
-            .asr_warmup_generation
-            .load(Ordering::SeqCst)
-            == generation
+        state.asr_warmup_generation.load(Ordering::SeqCst) == generation
     };
 
     let backend = parse_asr_backend(settings);
@@ -1060,7 +1145,9 @@ async fn ensure_asr_assets_ready(
                 .models
                 .lock()
                 .map_err(|err| anyhow!(err.to_string()))?;
-            guard.asset_by_name(&asset_name).map(|asset| asset.status.clone())
+            guard
+                .asset_by_name(&asset_name)
+                .map(|asset| asset.status.clone())
         };
 
         match status {

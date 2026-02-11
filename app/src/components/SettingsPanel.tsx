@@ -8,6 +8,7 @@ import type {
   AudioDevice,
   DownloadLogEntry,
   LinuxPermissionsStatus,
+  GnomeHudExtensionStatus,
   ModelRecord,
   ModelStateKind,
 } from "../state/appStore";
@@ -133,11 +134,16 @@ const SettingsPanel = () => {
     linuxPermissions,
     refreshLinuxPermissions,
     authenticateLinuxPermissions,
+    gnomeHudExtensionStatus,
+    refreshGnomeHudExtensionStatus,
+    installGnomeHudExtension,
   } = useAppStore();
 
   const [draft, setDraft] = useState<AppSettings | null>(null);
   const [linuxSetupBusy, setLinuxSetupBusy] = useState(false);
   const [linuxSetupMessage, setLinuxSetupMessage] = useState<string | null>(null);
+  const [hudExtensionBusy, setHudExtensionBusy] = useState(false);
+  const [hudExtensionMessage, setHudExtensionMessage] = useState<string | null>(null);
   const [updateInfo, setUpdateInfo] = useState<UpdateCheckResult | null>(null);
   const [downloadedUpdate, setDownloadedUpdate] = useState<DownloadedUpdate | null>(null);
   const [updateProgress, setUpdateProgress] = useState<UpdateDownloadProgress | null>(null);
@@ -156,6 +162,10 @@ const SettingsPanel = () => {
   useEffect(() => {
     void refreshLinuxPermissions();
   }, [refreshLinuxPermissions]);
+
+  useEffect(() => {
+    void refreshGnomeHudExtensionStatus();
+  }, [refreshGnomeHudExtensionStatus]);
 
   useEffect(() => {
     void refreshAudioDevices();
@@ -249,6 +259,20 @@ const SettingsPanel = () => {
     } finally {
       setLinuxSetupBusy(false);
       void refreshLinuxPermissions();
+    }
+  };
+
+  const handleInstallGnomeHudExtension = async () => {
+    setHudExtensionBusy(true);
+    setHudExtensionMessage(null);
+    try {
+      await installGnomeHudExtension();
+      setHudExtensionMessage("GNOME HUD extension installed.");
+      void refreshGnomeHudExtensionStatus();
+    } catch (error) {
+      setHudExtensionMessage(`Failed to install GNOME HUD extension: ${error}`);
+    } finally {
+      setHudExtensionBusy(false);
     }
   };
 
@@ -360,8 +384,13 @@ const SettingsPanel = () => {
                 draft={draft}
                 audioDevices={audioDevices}
                 waylandSession={Boolean(linuxPermissions?.waylandSession)}
+                gnomeHudExtensionStatus={gnomeHudExtensionStatus}
+                hudExtensionBusy={hudExtensionBusy}
+                hudExtensionMessage={hudExtensionMessage}
                 onChange={handleChange}
                 onRefreshDevices={refreshAudioDevices}
+                onRefreshHudExtensionStatus={refreshGnomeHudExtensionStatus}
+                onInstallHudExtension={handleInstallGnomeHudExtension}
               />
             </AccordionSection>
 
@@ -1251,14 +1280,24 @@ const GeneralSection = ({
   draft,
   audioDevices,
   waylandSession,
+  gnomeHudExtensionStatus,
+  hudExtensionBusy,
+  hudExtensionMessage,
   onChange,
   onRefreshDevices,
+  onRefreshHudExtensionStatus,
+  onInstallHudExtension,
 }: {
   draft: AppSettings;
   audioDevices: AudioDevice[];
   waylandSession: boolean;
+  gnomeHudExtensionStatus: GnomeHudExtensionStatus | null;
+  hudExtensionBusy: boolean;
+  hudExtensionMessage: string | null;
   onChange: <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => void;
   onRefreshDevices: () => Promise<void>;
+  onRefreshHudExtensionStatus: () => Promise<void>;
+  onInstallHudExtension: () => Promise<void>;
 }) => {
   type HotkeyMode = AppSettings["hotkeyMode"];
   const activeMode: HotkeyMode = draft.hotkeyMode;
@@ -1467,6 +1506,85 @@ const GeneralSection = ({
           <p className="text-xs text-muted">
             HUD may not work on Wayland or some tiling window managers.
           </p>
+        )}
+
+        {waylandSession && gnomeHudExtensionStatus?.isGnomeWayland && (
+          <div className="rounded-vibe border border-border bg-surface2 p-3 text-sm">
+            <div className="grid gap-1 text-xs">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-muted">GNOME HUD extension</span>
+                <span
+                  className={
+                    gnomeHudExtensionStatus.installed && gnomeHudExtensionStatus.enabled
+                      ? "text-good"
+                      : "text-warn"
+                  }
+                >
+                  {gnomeHudExtensionStatus.installed
+                    ? gnomeHudExtensionStatus.enabled
+                      ? "installed + enabled"
+                      : "installed, disabled"
+                    : "not installed"}
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-muted">Installed on disk</span>
+                <span className={gnomeHudExtensionStatus.installed ? "text-good" : "text-warn"}>
+                  {gnomeHudExtensionStatus.installed ? "yes" : "no"}
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-muted">Detected by GNOME Shell</span>
+                <span className={gnomeHudExtensionStatus.detectedByShell ? "text-good" : "text-warn"}>
+                  {gnomeHudExtensionStatus.detectedByShell ? "yes" : "no"}
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-muted">GNOME Shell version</span>
+                <span className="text-fg">{gnomeHudExtensionStatus.gnomeShellVersion ?? "unknown"}</span>
+              </div>
+            </div>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => {
+                  void onInstallHudExtension();
+                }}
+                disabled={hudExtensionBusy}
+              >
+                {hudExtensionBusy
+                  ? "Installing..."
+                  : gnomeHudExtensionStatus.installed
+                    ? "Reinstall / Enable"
+                    : "Install extension"}
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  void onRefreshHudExtensionStatus();
+                }}
+                disabled={hudExtensionBusy}
+              >
+                Refresh status
+              </Button>
+            </div>
+            {hudExtensionMessage && (
+              <p className="mt-2 text-xs text-muted">{hudExtensionMessage}</p>
+            )}
+            {gnomeHudExtensionStatus.details.length > 0 && (
+              <p className="mt-2 text-xs text-muted">
+                {gnomeHudExtensionStatus.details.join(" ")}
+              </p>
+            )}
+            {gnomeHudExtensionStatus.installed && !gnomeHudExtensionStatus.detectedByShell && (
+              <p className="mt-2 text-xs text-warn">
+                Extension files are installed but not loaded by GNOME Shell yet. Log out and back in,
+                then refresh status.
+              </p>
+            )}
+          </div>
         )}
       </div>
     </div>

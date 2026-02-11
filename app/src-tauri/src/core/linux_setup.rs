@@ -1,5 +1,11 @@
 use serde::Serialize;
 
+const GNOME_HUD_EXTENSION_UUID: &str = "openflow-hud@openflow";
+const GNOME_HUD_METADATA: &str =
+    include_str!("../../../../gnome-extension/openflow-hud@openflow/metadata.json");
+const GNOME_HUD_EXTENSION_JS: &str =
+    include_str!("../../../../gnome-extension/openflow-hud@openflow/extension.js");
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LinuxPermissionsStatus {
@@ -19,6 +25,152 @@ pub struct LinuxPermissionsStatus {
     pub pkexec_available: bool,
     pub setfacl_available: bool,
     pub details: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GnomeHudExtensionStatus {
+    pub supported: bool,
+    pub is_gnome_wayland: bool,
+    pub installed: bool,
+    pub detected_by_shell: bool,
+    pub enabled: bool,
+    pub can_auto_enable: bool,
+    pub gnome_shell_version: Option<String>,
+    pub details: Vec<String>,
+}
+
+pub fn gnome_hud_extension_status() -> GnomeHudExtensionStatus {
+    let mut details = Vec::new();
+    let is_gnome_wayland = is_gnome_wayland_session();
+    let can_auto_enable = binary_in_path("gnome-extensions");
+    let gnome_shell_version = detect_gnome_shell_version();
+
+    let extension_dir = gnome_extension_dir();
+    let installed = extension_dir
+        .as_ref()
+        .map(|dir| dir.join("metadata.json").is_file() && dir.join("extension.js").is_file())
+        .unwrap_or(false);
+
+    if extension_dir.is_none() {
+        details.push("HOME is not set; cannot resolve GNOME extension directory".to_string());
+    }
+
+    if !is_gnome_wayland {
+        details.push("GNOME Wayland session not detected".to_string());
+    }
+
+    if !can_auto_enable {
+        details.push("gnome-extensions CLI not found".to_string());
+    }
+
+    let detected_by_shell = if can_auto_enable {
+        match std::process::Command::new("gnome-extensions")
+            .args(["info", GNOME_HUD_EXTENSION_UUID])
+            .output()
+        {
+            Ok(output) if output.status.success() => true,
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let message = stderr.trim();
+                if !message.is_empty()
+                    && !message.contains("doesn't exist")
+                    && !message.contains("does not exist")
+                {
+                    details.push(format!("gnome-extensions info failed: {message}"));
+                }
+                false
+            }
+            Err(error) => {
+                details.push(format!("failed to run gnome-extensions info: {error}"));
+                false
+            }
+        }
+    } else {
+        false
+    };
+
+    if installed && !detected_by_shell {
+        details.push(
+            "Installed on disk but GNOME Shell has not registered it yet (check shell-version compatibility or log out/in)."
+                .to_string(),
+        );
+    }
+
+    let enabled = if can_auto_enable && detected_by_shell {
+        match std::process::Command::new("gnome-extensions")
+            .args(["list", "--enabled"])
+            .output()
+        {
+            Ok(output) if output.status.success() => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                stdout
+                    .lines()
+                    .any(|line| line.trim() == GNOME_HUD_EXTENSION_UUID)
+            }
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                if !stderr.trim().is_empty() {
+                    details.push(format!("gnome-extensions list failed: {}", stderr.trim()));
+                }
+                false
+            }
+            Err(error) => {
+                details.push(format!("failed to run gnome-extensions: {error}"));
+                false
+            }
+        }
+    } else {
+        false
+    };
+
+    GnomeHudExtensionStatus {
+        supported: true,
+        is_gnome_wayland,
+        installed,
+        detected_by_shell,
+        enabled,
+        can_auto_enable,
+        gnome_shell_version,
+        details,
+    }
+}
+
+pub fn install_gnome_hud_extension() -> anyhow::Result<GnomeHudExtensionStatus> {
+    if !is_gnome_wayland_session() {
+        anyhow::bail!("GNOME Wayland session not detected");
+    }
+
+    let extension_dir = gnome_extension_dir().ok_or_else(|| anyhow::anyhow!("HOME is not set"))?;
+    std::fs::create_dir_all(&extension_dir)?;
+
+    std::fs::write(extension_dir.join("metadata.json"), GNOME_HUD_METADATA)?;
+    std::fs::write(extension_dir.join("extension.js"), GNOME_HUD_EXTENSION_JS)?;
+
+    if binary_in_path("gnome-extensions") {
+        let status = gnome_hud_extension_status();
+        if !status.detected_by_shell {
+            tracing::warn!(
+                "extension files written but GNOME Shell does not detect the extension yet"
+            );
+            return Ok(status);
+        }
+
+        match std::process::Command::new("gnome-extensions")
+            .args(["enable", GNOME_HUD_EXTENSION_UUID])
+            .status()
+        {
+            Ok(status) if status.success() => {}
+            Ok(status) => {
+                tracing::warn!("gnome-extensions enable exited with status {status}");
+            }
+            Err(error) => {
+                tracing::warn!("failed to run gnome-extensions enable: {error}");
+            }
+        }
+    }
+
+    Ok(gnome_hud_extension_status())
 }
 
 pub fn permissions_status() -> LinuxPermissionsStatus {
@@ -420,4 +572,51 @@ fn binary_in_path(binary: &str) -> bool {
     }
 
     false
+}
+
+fn gnome_extension_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME").map(|home| {
+        std::path::PathBuf::from(home)
+            .join(".local")
+            .join("share")
+            .join("gnome-shell")
+            .join("extensions")
+            .join(GNOME_HUD_EXTENSION_UUID)
+    })
+}
+
+fn is_gnome_wayland_session() -> bool {
+    let xdg_session_type = std::env::var("XDG_SESSION_TYPE").unwrap_or_default();
+    let wayland_display = std::env::var("WAYLAND_DISPLAY").unwrap_or_default();
+    let wayland_session =
+        xdg_session_type.eq_ignore_ascii_case("wayland") || !wayland_display.is_empty();
+    if !wayland_session {
+        return false;
+    }
+
+    let desktop = std::env::var("XDG_CURRENT_DESKTOP")
+        .or_else(|_| std::env::var("DESKTOP_SESSION"))
+        .unwrap_or_default();
+
+    desktop
+        .split(':')
+        .any(|segment| segment.eq_ignore_ascii_case("gnome"))
+}
+
+fn detect_gnome_shell_version() -> Option<String> {
+    let output = std::process::Command::new("gnome-shell")
+        .arg("--version")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let version = stdout.trim().strip_prefix("GNOME Shell ")?.trim();
+    if version.is_empty() {
+        None
+    } else {
+        Some(version.to_string())
+    }
 }

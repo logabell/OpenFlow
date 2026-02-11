@@ -116,6 +116,17 @@ export interface LinuxPermissionsStatus {
   details: string[];
 }
 
+export interface GnomeHudExtensionStatus {
+  supported: boolean;
+  isGnomeWayland: boolean;
+  installed: boolean;
+  detectedByShell: boolean;
+  enabled: boolean;
+  canAutoEnable: boolean;
+  gnomeShellVersion: string | null;
+  details: string[];
+}
+
 export const DEFAULT_PUSH_TO_TALK_HOTKEY = "RightAlt";
 export const DEFAULT_TOGGLE_TO_TALK_HOTKEY = "RightAlt";
 
@@ -174,6 +185,9 @@ interface AppState {
   linuxPermissions: LinuxPermissionsStatus | null;
   refreshLinuxPermissions: () => Promise<void>;
   authenticateLinuxPermissions: () => Promise<void>;
+  gnomeHudExtensionStatus: GnomeHudExtensionStatus | null;
+  refreshGnomeHudExtensionStatus: () => Promise<void>;
+  installGnomeHudExtension: () => Promise<void>;
 }
 
 export interface AudioDevice {
@@ -194,11 +208,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   downloadLogs: [],
   downloadStartTimes: {},
   linuxPermissions: null,
+  gnomeHudExtensionStatus: null,
   initialize: async () => {
     await get().refreshSettings();
     await get().refreshModels();
     await get().refreshAudioDevices();
     await get().refreshLinuxPermissions();
+    await get().refreshGnomeHudExtensionStatus();
   },
   setHudState: (state) => set({ hudState: state }),
   toggleSettings: (value) =>
@@ -404,6 +420,18 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   authenticateLinuxPermissions: async () => {
     await invoke("linux_enable_permissions");
+  },
+  refreshGnomeHudExtensionStatus: async () => {
+    try {
+      const status = await invoke<GnomeHudExtensionStatus>("gnome_hud_extension_status");
+      set({ gnomeHudExtensionStatus: status });
+    } catch {
+      set({ gnomeHudExtensionStatus: null });
+    }
+  },
+  installGnomeHudExtension: async () => {
+    await invoke("gnome_hud_extension_install");
+    await get().refreshGnomeHudExtensionStatus();
   },
 }));
 

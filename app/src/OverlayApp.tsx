@@ -4,7 +4,6 @@ import { listen } from "@tauri-apps/api/event";
 import { useAppStore, type HudState, type AppSettings } from "./state/appStore";
 import StatusOrb from "./components/StatusOrb";
 import { applyThemePreference } from "./ui/theme";
-import HUD from "./components/HUD";
 
 const OverlayApp = () => {
   const setHudState = useAppStore((state) => state.setHudState);
@@ -68,8 +67,7 @@ const OverlayApp = () => {
 
   return (
     <div className="pointer-events-none relative h-screen w-screen bg-transparent">
-      <HUD />
-      <StatusOrb alwaysVisible />
+      <StatusOrb />
     </div>
   );
 };

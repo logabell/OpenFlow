@@ -10,8 +10,8 @@ use anyhow::anyhow;
 use audio::{list_input_devices, AudioDeviceInfo};
 use core::{app_state::AppState, pipeline::OutputMode, settings::FrontendSettings};
 use models::ModelAsset;
-use tauri::{AppHandle, Manager};
 use tauri::{image::Image, include_image, WebviewWindowBuilder};
+use tauri::{AppHandle, Manager};
 use tracing::metadata::LevelFilter;
 
 const APP_ICON: Image<'_> = include_image!("./icons/32x32.png");
@@ -40,6 +40,8 @@ async fn update_settings(
     state
         .configure_pipeline(Some(&app), &fresh)
         .map_err(tauri::Error::from)?;
+
+    state.sync_hud_overlay_mode(&app);
 
     // Warm the selected ASR model in the background so the next dictation starts instantly.
     state.kickoff_asr_warmup(&app);
@@ -83,9 +85,21 @@ async fn linux_enable_permissions() -> tauri::Result<()> {
 }
 
 #[tauri::command]
-async fn check_for_updates(
-    force: Option<bool>,
-) -> tauri::Result<core::updater::UpdateCheckResult> {
+async fn gnome_hud_extension_status() -> tauri::Result<core::linux_setup::GnomeHudExtensionStatus> {
+    Ok(core::linux_setup::gnome_hud_extension_status())
+}
+
+#[tauri::command]
+async fn gnome_hud_extension_install() -> tauri::Result<core::linux_setup::GnomeHudExtensionStatus>
+{
+    tokio::task::spawn_blocking(|| crate::core::linux_setup::install_gnome_hud_extension())
+        .await
+        .map_err(|err| tauri::Error::from(anyhow!(err.to_string())))?
+        .map_err(tauri::Error::from)
+}
+
+#[tauri::command]
+async fn check_for_updates(force: Option<bool>) -> tauri::Result<core::updater::UpdateCheckResult> {
     let force = force.unwrap_or(false);
     tokio::task::spawn_blocking(move || crate::core::updater::check_for_updates(force))
         .await
@@ -104,9 +118,9 @@ async fn download_update(
             crate::core::events::emit_update_download_progress(&app, progress);
         })
     })
-        .await
-        .map_err(|err| tauri::Error::from(anyhow!(err.to_string())))?
-        .map_err(tauri::Error::from)
+    .await
+    .map_err(|err| tauri::Error::from(anyhow!(err.to_string())))?
+    .map_err(tauri::Error::from)
 }
 
 #[tauri::command]
@@ -116,9 +130,9 @@ async fn apply_update(app: AppHandle, tarball_path: String) -> tauri::Result<()>
             crate::core::events::emit_update_apply_progress(&app, progress);
         })
     })
-        .await
-        .map_err(|err| tauri::Error::from(anyhow!(err.to_string())))?
-        .map_err(tauri::Error::from)
+    .await
+    .map_err(|err| tauri::Error::from(anyhow!(err.to_string())))?
+    .map_err(tauri::Error::from)
 }
 
 #[tauri::command]
@@ -284,6 +298,8 @@ fn main() {
             unregister_hotkeys,
             linux_permissions_status,
             linux_enable_permissions,
+            gnome_hud_extension_status,
+            gnome_hud_extension_install,
             check_for_updates,
             download_update,
             apply_update,
@@ -329,6 +345,7 @@ fn main() {
                 if let Err(error) = state.initialize_pipeline(&handle) {
                     tracing::warn!("Failed to initialize pipeline: {error:?}");
                 }
+                state.sync_hud_overlay_mode(&handle);
 
                 // Always start ASR warmup on launch (non-blocking).
                 state.kickoff_asr_warmup(&handle);

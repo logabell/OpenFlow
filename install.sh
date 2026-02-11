@@ -9,6 +9,8 @@ DESKTOP_FILE="/usr/share/applications/openflow.desktop"
 UDEV_RULE_FILE="/etc/udev/rules.d/99-openflow-uinput.rules"
 STATE_DIR="/var/lib/openflow"
 STATE_FILE="$STATE_DIR/install-state.json"
+GNOME_EXTENSION_UUID="openflow-hud@openflow"
+GNOME_EXTENSION_MARKER=".openflow-managed"
 
 ASSET_TARBALL="openflow-linux-x86_64.tar.gz"
 ASSET_SHA256="$ASSET_TARBALL.sha256"
@@ -351,6 +353,56 @@ verify_sha256() {
   if [ "$actual" != "$expected" ]; then
     die "checksum mismatch for $(basename "$file"): expected $expected got $actual"
   fi
+}
+
+is_gnome_desktop() {
+  local desktop="${XDG_CURRENT_DESKTOP:-${DESKTOP_SESSION:-}}"
+  if [ -z "$desktop" ]; then
+    return 1
+  fi
+
+  case "${desktop,,}" in
+    *gnome*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+install_gnome_extension() {
+  local src_dir="$INSTALL_DIR/gnome-extension/$GNOME_EXTENSION_UUID"
+  local user_dir="$HOME/.local/share/gnome-shell/extensions/$GNOME_EXTENSION_UUID"
+
+  if [ ! -d "$src_dir" ]; then
+    return 0
+  fi
+
+  echo "Installing GNOME HUD extension..."
+  mkdir -p "$(dirname "$user_dir")"
+  rm -rf "$user_dir"
+  cp -R "$src_dir" "$user_dir"
+  touch "$user_dir/$GNOME_EXTENSION_MARKER"
+
+  if command -v gnome-extensions >/dev/null 2>&1 && is_gnome_desktop; then
+    gnome-extensions enable "$GNOME_EXTENSION_UUID" >/dev/null 2>&1 || \
+      echo "Warning: GNOME extension installed but could not be enabled automatically." >&2
+  fi
+}
+
+uninstall_gnome_extension() {
+  local user_dir="$HOME/.local/share/gnome-shell/extensions/$GNOME_EXTENSION_UUID"
+
+  if [ ! -d "$user_dir" ]; then
+    return 0
+  fi
+
+  if [ ! -f "$user_dir/$GNOME_EXTENSION_MARKER" ]; then
+    return 0
+  fi
+
+  if command -v gnome-extensions >/dev/null 2>&1; then
+    gnome-extensions disable "$GNOME_EXTENSION_UUID" >/dev/null 2>&1 || true
+  fi
+
+  rm -rf "$user_dir"
 }
 
 install_app_tarball() {
@@ -741,6 +793,8 @@ download_models() {
 uninstall() {
   echo "Uninstalling OpenFlow..."
 
+  uninstall_gnome_extension
+
   local state_user=""
   local user_was_in_input=""
   local udev_rule_written=""
@@ -841,6 +895,7 @@ install_app_tarball
 install_symlink
 install_icons
 install_desktop_entry
+install_gnome_extension
 configure_permissions
 download_models
 

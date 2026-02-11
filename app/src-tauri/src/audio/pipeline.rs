@@ -8,7 +8,6 @@ use tauri::async_runtime::JoinHandle;
 use tracing::warn;
 use tracing::{debug, info};
 
-
 const DEFAULT_SAMPLE_RATE: u32 = 16_000;
 const DEFAULT_FRAME_LEN: usize = 320;
 const DEFAULT_FRAME_INTERVAL: Duration = Duration::from_millis(20);
@@ -21,9 +20,7 @@ pub struct AudioPipelineConfig {
 
 impl Default for AudioPipelineConfig {
     fn default() -> Self {
-        Self {
-            device_id: None,
-        }
+        Self { device_id: None }
     }
 }
 
@@ -57,17 +54,18 @@ impl AudioPipeline {
         let (out_tx, out_rx) = bounded(64);
         let config = Arc::new(config);
         #[cfg(feature = "real-audio")]
-        let (real_audio, sample_rate) = match RealAudioHandle::spawn(Arc::clone(&config), tx.clone()) {
-            Ok(handle) => {
-                let rate = handle.sample_rate();
-                info!("real audio capture started (sample_rate={rate}Hz)");
-                (Some(handle), rate)
-            }
-            Err(error) => {
-                warn!("real audio capture failed, falling back to synthetic: {error:?}");
-                (None, DEFAULT_SAMPLE_RATE)
-            }
-        };
+        let (real_audio, sample_rate) =
+            match RealAudioHandle::spawn(Arc::clone(&config), tx.clone()) {
+                Ok(handle) => {
+                    let rate = handle.sample_rate();
+                    info!("real audio capture started (sample_rate={rate}Hz)");
+                    (Some(handle), rate)
+                }
+                Err(error) => {
+                    warn!("real audio capture failed, falling back to synthetic: {error:?}");
+                    (None, DEFAULT_SAMPLE_RATE)
+                }
+            };
 
         #[cfg(not(feature = "real-audio"))]
         let real_audio: Option<RealAudioHandle> = None;

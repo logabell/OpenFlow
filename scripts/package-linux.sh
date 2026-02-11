@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_DIR="$ROOT_DIR/app"
 TAURI_DIR="$APP_DIR/src-tauri"
+GNOME_EXT_DIR="$ROOT_DIR/gnome-extension"
 
 cd "$ROOT_DIR"
 
@@ -94,6 +95,11 @@ cp "$APP_DIR/src-tauri/icons/32x32.png" "$STAGE/openflow/icons/32x32.png"
 cp "$APP_DIR/src-tauri/icons/64x64.png" "$STAGE/openflow/icons/64x64.png"
 cp "$APP_DIR/src-tauri/icons/128x128.png" "$STAGE/openflow/icons/128x128.png"
 cp "$APP_DIR/src-tauri/icons/128x128@2x.png" "$STAGE/openflow/icons/256x256.png"
+
+if [ -d "$GNOME_EXT_DIR" ]; then
+  mkdir -p "$STAGE/openflow/gnome-extension"
+  cp -R "$GNOME_EXT_DIR/." "$STAGE/openflow/gnome-extension/"
+fi
 
 printf '%s\n' "v$VERSION" > "$STAGE/openflow/VERSION"
 

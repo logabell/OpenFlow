@@ -1,0 +1,7 @@
+{
+  "uuid": "openflow-hud@openflow",
+  "name": "OpenFlow HUD",
+  "description": "Displays OpenFlow dictation HUD in GNOME Shell.",
+  "version": 1,
+  "shell-version": ["45", "46", "47", "48", "49", "50"]
+}

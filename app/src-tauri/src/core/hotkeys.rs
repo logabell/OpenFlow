@@ -1,6 +1,6 @@
 use parking_lot::RwLock;
-use tauri::{AppHandle, Emitter};
 use tauri::Manager;
+use tauri::{AppHandle, Emitter};
 use tracing::{info, warn};
 
 use crate::core::app_state::AppState;
@@ -472,13 +472,26 @@ mod linux_evdev {
             warned_no_devices = false;
 
             for (key, value) in manager.poll_events() {
-                update_modifier_state(key, value, &mut held_ctrl, &mut held_alt, &mut held_shift, &mut held_meta);
+                update_modifier_state(
+                    key,
+                    value,
+                    &mut held_ctrl,
+                    &mut held_alt,
+                    &mut held_shift,
+                    &mut held_meta,
+                );
 
                 if key != spec.key {
                     continue;
                 }
 
-                if !modifiers_satisfied(spec.modifiers, &held_ctrl, &held_alt, &held_shift, &held_meta) {
+                if !modifiers_satisfied(
+                    spec.modifiers,
+                    &held_ctrl,
+                    &held_alt,
+                    &held_shift,
+                    &held_meta,
+                ) {
                     continue;
                 }
 
@@ -717,7 +730,9 @@ mod linux_evdev {
         device
             .supported_keys()
             .map(|keys| {
-                keys.contains(Key::KEY_A) && keys.contains(Key::KEY_Z) && keys.contains(Key::KEY_ENTER)
+                keys.contains(Key::KEY_A)
+                    && keys.contains(Key::KEY_Z)
+                    && keys.contains(Key::KEY_ENTER)
             })
             .unwrap_or(false)
     }
@@ -783,8 +798,7 @@ mod linux_x11 {
         thread: thread::JoinHandle<()>,
     }
 
-    static X11_LISTENER: parking_lot::RwLock<Option<X11Listener>> =
-        parking_lot::RwLock::new(None);
+    static X11_LISTENER: parking_lot::RwLock<Option<X11Listener>> = parking_lot::RwLock::new(None);
 
     #[derive(Debug, Clone, Copy)]
     struct Modifiers {
@@ -832,14 +846,7 @@ mod linux_x11 {
         for extra in variants {
             let mask_bits = required_mask | extra;
             let mask = ModMask::from(mask_bits);
-            let _ = conn.grab_key(
-                false,
-                root,
-                mask,
-                keycode,
-                GrabMode::ASYNC,
-                GrabMode::ASYNC,
-            )?;
+            let _ = conn.grab_key(false, root, mask, keycode, GrabMode::ASYNC, GrabMode::ASYNC)?;
         }
 
         conn.flush()?;
@@ -854,7 +861,15 @@ mod linux_x11 {
         let thread = thread::Builder::new()
             .name("x11-hotkeys".to_string())
             .spawn(move || {
-                if let Err(error) = run_loop(conn, app_handle, HotkeySpec { keycode, required: required_mask }, stop_rx) {
+                if let Err(error) = run_loop(
+                    conn,
+                    app_handle,
+                    HotkeySpec {
+                        keycode,
+                        required: required_mask,
+                    },
+                    stop_rx,
+                ) {
                     tracing::warn!("x11 hotkey listener stopped: {error:?}");
                 }
             })?;
@@ -928,10 +943,14 @@ mod linux_x11 {
             let keycodes_per_mod = reply.keycodes_per_modifier() as usize;
             let mods = reply.keycodes;
 
-            let alt_code =
-                keycode_for_any_keysym(conn, &[XK_ALT_L, XK_ALT_R, XK_ISO_LEVEL3_SHIFT, XK_MODE_SWITCH]).ok();
+            let alt_code = keycode_for_any_keysym(
+                conn,
+                &[XK_ALT_L, XK_ALT_R, XK_ISO_LEVEL3_SHIFT, XK_MODE_SWITCH],
+            )
+            .ok();
 
-            let meta_code = keycode_for_any_keysym(conn, &[XK_SUPER_L, XK_SUPER_R, XK_META_L, XK_META_R]).ok();
+            let meta_code =
+                keycode_for_any_keysym(conn, &[XK_SUPER_L, XK_SUPER_R, XK_META_L, XK_META_R]).ok();
 
             let num_code = keycode_for_any_keysym(conn, &[XK_NUM_LOCK]).ok();
 
@@ -1020,10 +1039,8 @@ mod linux_x11 {
                     if let Ok(n) = num.parse::<u8>() {
                         let base = XK_F1;
                         if (1..=24).contains(&n) {
-                            return Ok(
-                                keycode_for_any_keysym(conn, &[base + (n as u32) - 1])
-                                    .context("resolve function key")?,
-                            );
+                            return Ok(keycode_for_any_keysym(conn, &[base + (n as u32) - 1])
+                                .context("resolve function key")?);
                         }
                     }
                 }

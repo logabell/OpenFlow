@@ -392,7 +392,6 @@ impl SpeechPipelineInner {
         events::emit_metrics(&self.app, &*metrics);
     }
 
-
     fn set_mode(&self, mode: AutocleanMode) {
         let mut guard = self.mode.lock();
         *guard = mode;
@@ -612,19 +611,19 @@ impl SpeechPipelineInner {
                                 events::emit_paste_failed(&self.app, payload);
                             }
                         }
-                    crate::output::OutputInjectionError::Copy(message) => {
-                        events::emit_paste_failed(
-                            &self.app,
-                            events::PasteFailedPayload {
-                                step: "clipboard".to_string(),
-                                message,
-                                shortcut: "unknown".to_string(),
-                                transcript_on_clipboard: false,
-                                linux,
-                            },
-                        );
+                        crate::output::OutputInjectionError::Copy(message) => {
+                            events::emit_paste_failed(
+                                &self.app,
+                                events::PasteFailedPayload {
+                                    step: "clipboard".to_string(),
+                                    message,
+                                    shortcut: "unknown".to_string(),
+                                    transcript_on_clipboard: false,
+                                    linux,
+                                },
+                            );
+                        }
                     }
-                }
                 }
             }
         } else {
