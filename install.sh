@@ -18,7 +18,7 @@ usage() {
 OpenFlow installer (Linux x86_64)
 
 Usage:
-  install.sh [--yes] [--models=parakeet,silero | --no-models]
+  install.sh [--yes]
   install.sh --uninstall
 
 Environment:
@@ -27,7 +27,7 @@ Environment:
 
 Examples:
   ./install.sh
-  ./install.sh --yes --models=parakeet,silero
+  ./install.sh --yes
   ./install.sh --uninstall
 EOF
 }
@@ -52,8 +52,6 @@ sudo_run() {
 
 ACTION="install"
 YES=0
-MODELS_MODE="prompt" # prompt | none | list
-MODELS_LIST=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -67,15 +65,6 @@ while [ "$#" -gt 0 ]; do
       ;;
     --uninstall)
       ACTION="uninstall"
-      shift
-      ;;
-    --no-models)
-      MODELS_MODE="none"
-      shift
-      ;;
-    --models=*)
-      MODELS_MODE="list"
-      MODELS_LIST="${1#--models=}"
       shift
       ;;
     *)
@@ -661,7 +650,52 @@ EOF
 models_dir() {
   local data_home
   data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
-  printf '%s\n' "$data_home/OpenFlow/OpenFlow/models"
+  printf '%s\n' "$data_home/openflow/models"
+}
+
+model_glob_first_file() {
+  local dir="$1"
+  local pattern="$2"
+  local candidate
+
+  shopt -s nullglob
+  for candidate in "$dir"/$pattern "$dir"/*/$pattern; do
+    if [ -f "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      shopt -u nullglob
+      return 0
+    fi
+  done
+  shopt -u nullglob
+
+  return 1
+}
+
+verify_model_silero() {
+  local dest_root
+  dest_root="$(models_dir)"
+  local model_path="$dest_root/vad/silero-vad-onnx-v6/silero_vad.onnx"
+
+  [ -s "$model_path" ] || die "Silero model install verification failed: missing or empty $model_path"
+}
+
+verify_model_parakeet() {
+  local dest_root
+  dest_root="$(models_dir)"
+  local dest="$dest_root/asr/parakeet/parakeet-tdt-0.6b-v2-int8-main"
+
+  [ -d "$dest" ] || die "Parakeet model install verification failed: missing directory $dest"
+
+  local encoder decoder joiner tokens
+  encoder="$(model_glob_first_file "$dest" '*encoder*.onnx' || true)"
+  decoder="$(model_glob_first_file "$dest" '*decoder*.onnx' || true)"
+  joiner="$(model_glob_first_file "$dest" '*joiner*.onnx' || true)"
+  tokens="$(model_glob_first_file "$dest" '*token*.txt' || true)"
+
+  [ -n "$encoder" ] || die "Parakeet model install verification failed: encoder ONNX missing in $dest"
+  [ -n "$decoder" ] || die "Parakeet model install verification failed: decoder ONNX missing in $dest"
+  [ -n "$joiner" ] || die "Parakeet model install verification failed: joiner ONNX missing in $dest"
+  [ -n "$tokens" ] || die "Parakeet model install verification failed: tokens file missing in $dest"
 }
 
 download_model_silero() {
@@ -692,44 +726,16 @@ download_model_parakeet() {
 }
 
 download_models() {
-  if [ "$MODELS_MODE" = "none" ]; then
-    return 0
-  fi
-
-  local selection="$MODELS_LIST"
-  if [ "$MODELS_MODE" = "prompt" ]; then
-    if [ "$YES" -eq 1 ]; then
-      selection="parakeet,silero"
-    else
-      echo "Model download options:"
-      echo "  1) Default (Parakeet + Silero)"
-      echo "  2) Parakeet only"
-      echo "  3) Silero only"
-      echo "  4) None"
-      printf '%s' "Select [1]: "
-      read -r choice
-      case "${choice:-1}" in
-        1) selection="parakeet,silero" ;;
-        2) selection="parakeet" ;;
-        3) selection="silero" ;;
-        4) selection="" ;;
-        *) selection="parakeet,silero" ;;
-      esac
-    fi
-  fi
-
-  if [ -z "$selection" ]; then
-    return 0
-  fi
-
+  echo "Installing required models (Parakeet ASR + Silero VAD)..."
   mkdir -p "$(models_dir)"
 
-  case ",${selection}," in
-    *,parakeet,*) download_model_parakeet ;;
-  esac
-  case ",${selection}," in
-    *,silero,*) download_model_silero ;;
-  esac
+  download_model_parakeet
+  verify_model_parakeet
+
+  download_model_silero
+  verify_model_silero
+
+  echo "Model installation verified."
 }
 
 uninstall() {

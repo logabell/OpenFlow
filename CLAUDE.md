@@ -104,7 +104,7 @@ await listen<HudState>("hud-state", (event) => { ... });
 
 ## Model Assets
 
-Models stored in the XDG data directory (typically `~/.local/share/OpenFlow/OpenFlow/models`).
+Models stored in the XDG data directory (typically `~/.local/share/openflow/models`).
 
 Environment variables for model paths:
 - `SILERO_VAD_MODEL` - Silero VAD ONNX model

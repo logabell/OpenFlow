@@ -28,7 +28,7 @@ OpenFlow is a local-first, privacy-focused dictation assistant for Linux. It lis
 ## Storage
 
 - Settings: XDG config dir (typically `~/.config/OpenFlow/OpenFlow/config.json`)
-- Models: XDG data dir (typically `~/.local/share/OpenFlow/OpenFlow/models/`)
+- Models: XDG data dir (typically `~/.local/share/openflow/models/`)
 
 ## Key Backend Modules
 
