@@ -1,4 +1,5 @@
 import Cairo from "cairo";
+import Gio from "gi://Gio";
 import GLib from "gi://GLib";
 import St from "gi://St";
 import * as Main from "resource:///org/gnome/shell/ui/main.js";
@@ -7,9 +8,12 @@ import { Extension } from "resource:///org/gnome/shell/extensions/extension.js";
 const HUD_SIZE = 104;
 const HUD_MARGIN_BOTTOM = 62;
 const ORB_RADIUS = 42;
+const HALO_SIZE = ORB_RADIUS * 2;
+const HALO_OFFSET = Math.floor((HUD_SIZE - HALO_SIZE) / 2);
 const POLL_INTERVAL_MS = 120;
 const ANIMATION_INTERVAL_MS = 16;
 const EXIT_HIDE_DELAY_MS = 260;
+const STARTUP_WRITE_GRACE_MS = 700;
 const TAU = Math.PI * 2;
 
 const STATE_COLORS = {
@@ -142,6 +146,8 @@ export default class OpenFlowHudExtension extends Extension {
         this._phaseOffsetB = Math.random() * TAU;
         this._colors = DEFAULT_COLORS;
         this._hideTimeoutId = null;
+        this._enabledAtMicros = GLib.get_real_time();
+        this._hasSeenPostEnableWrite = false;
 
         this._container = new St.Widget({
             reactive: false,
@@ -156,10 +162,10 @@ export default class OpenFlowHudExtension extends Extension {
             reactive: false,
             can_focus: false,
             track_hover: false,
-            x: -10,
-            y: -10,
-            width: HUD_SIZE + 20,
-            height: HUD_SIZE + 20,
+            x: HALO_OFFSET,
+            y: HALO_OFFSET,
+            width: HALO_SIZE,
+            height: HALO_SIZE,
             style: "border-radius: 999px; background-color: rgba(160, 180, 200, 0.35);",
         });
 
@@ -258,17 +264,34 @@ export default class OpenFlowHudExtension extends Extension {
             const payload = JSON.parse(this._decoder.decode(bytes));
             const enabled = payload?.enabled === true;
             const state = typeof payload?.state === "string" ? payload.state : "idle";
-            const signature = `${enabled ? "1" : "0"}:${state}`;
+            const pid = Number.isInteger(payload?.pid) ? payload.pid : null;
+            const sessionId = typeof payload?.session_id === "string" ? payload.session_id : null;
+            const modifiedMicros = this._readStateModifiedMicros(path);
 
-            if (signature === this._lastSignature) {
-                return;
+            if (
+                !this._hasSeenPostEnableWrite &&
+                modifiedMicros !== null &&
+                modifiedMicros + STARTUP_WRITE_GRACE_MS * 1000 >= this._enabledAtMicros
+            ) {
+                this._hasSeenPostEnableWrite = true;
             }
-            this._lastSignature = signature;
 
             if (!enabled || state === "idle") {
                 this._scheduleHide();
                 return;
             }
+
+            if (!this._hasSeenPostEnableWrite) {
+                this._cancelHideSchedule();
+                this._hide();
+                return;
+            }
+
+            const signature = `${enabled ? "1" : "0"}:${state}:${pid ?? "none"}:${sessionId ?? "none"}`;
+            if (signature === this._lastSignature) {
+                return;
+            }
+            this._lastSignature = signature;
 
             this._cancelHideSchedule();
             this._state = state;
@@ -278,6 +301,23 @@ export default class OpenFlowHudExtension extends Extension {
             this._drawingArea.queue_repaint();
         } catch (_error) {
             this._scheduleHide();
+        }
+    }
+
+    _readStateModifiedMicros(path) {
+        try {
+            const file = Gio.File.new_for_path(path);
+            const info = file.query_info(
+                "time::modified,time::modified-usec",
+                Gio.FileQueryInfoFlags.NONE,
+                null
+            );
+
+            const modifiedSec = info.get_attribute_uint64("time::modified");
+            const modifiedUsec = info.get_attribute_uint32("time::modified-usec");
+            return modifiedSec * 1000000 + modifiedUsec;
+        } catch (_error) {
+            return null;
         }
     }
 
@@ -327,7 +367,7 @@ export default class OpenFlowHudExtension extends Extension {
         this._driftY = Math.cos(this._phase * 0.56 + this._phaseOffsetB) * (isProcessing ? 1.3 : 0.9);
 
         const pulse = (Math.sin(this._phase * (isProcessing ? 1.45 : 1.05)) + 1) * 0.5;
-        this._halo.opacity = Math.round(66 + pulse * (isProcessing ? 96 : 56));
+        this._halo.opacity = Math.round(22 + pulse * (isProcessing ? 40 : 28));
         this._drawingArea.queue_repaint();
     }
 

@@ -779,6 +779,8 @@ fn publish_hud_runtime_state(state: &AppState, hud_state: &str) {
     let payload = serde_json::json!({
         "enabled": overlay_enabled,
         "state": hud_state,
+        "pid": std::process::id(),
+        "session_id": std::env::var("XDG_SESSION_ID").ok(),
     });
 
     if let Err(error) = std::fs::write(&path, payload.to_string()) {
