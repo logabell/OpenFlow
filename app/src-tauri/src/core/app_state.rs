@@ -213,14 +213,11 @@ impl AppState {
     }
 
     pub fn start_session(&self, app: &AppHandle) {
-        let show_overlay = if is_wayland_session() {
-            self.settings_manager()
-                .read_frontend()
-                .map(|settings| settings.show_overlay_on_wayland)
-                .unwrap_or(false)
-        } else {
-            true
-        };
+        let show_overlay = self
+            .settings_manager()
+            .read_frontend()
+            .map(|settings| settings.show_hud_overlay)
+            .unwrap_or(false);
 
         self.start_session_with_overlay(app, show_overlay);
     }
@@ -719,12 +716,6 @@ fn parse_paste_shortcut(value: &str) -> PasteShortcut {
         "ctrl-shift-v" => PasteShortcut::CtrlShiftV,
         _ => PasteShortcut::CtrlShiftV,
     }
-}
-
-fn is_wayland_session() -> bool {
-    let xdg_session_type = std::env::var("XDG_SESSION_TYPE").unwrap_or_default();
-    let wayland_display = std::env::var("WAYLAND_DISPLAY").unwrap_or_default();
-    xdg_session_type == "wayland" || !wayland_display.is_empty()
 }
 
 /// Show the status overlay window positioned at the bottom center of the screen

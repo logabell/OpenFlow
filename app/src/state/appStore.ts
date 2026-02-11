@@ -69,7 +69,7 @@ export interface AppSettings {
   pushToTalkHotkey: string;
   toggleToTalkHotkey: string;
   hudTheme: "system" | "light" | "dark" | "high-contrast";
-  showOverlayOnWayland: boolean;
+  showHudOverlay: boolean;
   asrFamily: "parakeet" | "whisper";
   whisperBackend: "ct2" | "onnx";
   whisperModel:
@@ -97,6 +97,25 @@ export interface PerformanceMetrics {
   performanceMode: boolean;
 }
 
+export interface LinuxPermissionsStatus {
+  supported: boolean;
+  waylandSession: boolean;
+  x11Session: boolean;
+  x11DisplayAvailable: boolean;
+  x11HotkeysAvailable: boolean;
+  x11XtestAvailable: boolean;
+  xdgRuntimeDirAvailable: boolean;
+  evdevReadable: boolean;
+  uinputWritable: boolean;
+  clipboardBackend: string;
+  wlCopyAvailable: boolean;
+  wlPasteAvailable: boolean;
+  xclipAvailable: boolean;
+  pkexecAvailable: boolean;
+  setfaclAvailable: boolean;
+  details: string[];
+}
+
 export const DEFAULT_PUSH_TO_TALK_HOTKEY = "RightAlt";
 export const DEFAULT_TOGGLE_TO_TALK_HOTKEY = "RightAlt";
 
@@ -105,7 +124,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   pushToTalkHotkey: DEFAULT_PUSH_TO_TALK_HOTKEY,
   toggleToTalkHotkey: DEFAULT_TOGGLE_TO_TALK_HOTKEY,
   hudTheme: "system",
-  showOverlayOnWayland: false,
+  showHudOverlay: false,
   asrFamily: "parakeet",
   whisperBackend: "ct2",
   whisperModel: "small",
@@ -152,6 +171,9 @@ interface AppState {
   addDownloadLog: (entry: Omit<DownloadLogEntry, "id" | "timestamp">) => void;
   clearDownloadLogs: () => void;
   downloadStartTimes: Record<string, number>;
+  linuxPermissions: LinuxPermissionsStatus | null;
+  refreshLinuxPermissions: () => Promise<void>;
+  authenticateLinuxPermissions: () => Promise<void>;
 }
 
 export interface AudioDevice {
@@ -171,10 +193,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   audioDevices: [],
   downloadLogs: [],
   downloadStartTimes: {},
+  linuxPermissions: null,
   initialize: async () => {
     await get().refreshSettings();
     await get().refreshModels();
     await get().refreshAudioDevices();
+    await get().refreshLinuxPermissions();
   },
   setHudState: (state) => set({ hudState: state }),
   toggleSettings: (value) =>
@@ -370,6 +394,17 @@ export const useAppStore = create<AppState>((set, get) => ({
       ],
     })),
   clearDownloadLogs: () => set({ downloadLogs: [] }),
+  refreshLinuxPermissions: async () => {
+    try {
+      const status = await invoke<LinuxPermissionsStatus>("linux_permissions_status");
+      set({ linuxPermissions: status });
+    } catch {
+      set({ linuxPermissions: null });
+    }
+  },
+  authenticateLinuxPermissions: async () => {
+    await invoke("linux_enable_permissions");
+  },
 }));
 
 export interface Toast {

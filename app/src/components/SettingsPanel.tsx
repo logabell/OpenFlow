@@ -7,6 +7,7 @@ import type {
   AppSettings,
   AudioDevice,
   DownloadLogEntry,
+  LinuxPermissionsStatus,
   ModelRecord,
   ModelStateKind,
 } from "../state/appStore";
@@ -15,25 +16,6 @@ import {
   DEFAULT_TOGGLE_TO_TALK_HOTKEY,
 } from "../state/appStore";
 import HotkeyInput from "./HotkeyInput";
-
-type LinuxPermissionsStatus = {
-  supported: boolean;
-  waylandSession: boolean;
-  x11Session: boolean;
-  x11DisplayAvailable: boolean;
-  x11HotkeysAvailable: boolean;
-  x11XtestAvailable: boolean;
-  xdgRuntimeDirAvailable: boolean;
-  evdevReadable: boolean;
-  uinputWritable: boolean;
-  clipboardBackend: string;
-  wlCopyAvailable: boolean;
-  wlPasteAvailable: boolean;
-  xclipAvailable: boolean;
-  pkexecAvailable: boolean;
-  setfaclAvailable: boolean;
-  details: string[];
-};
 
 type UpdateCheckResult = {
   currentVersion: string;
@@ -148,11 +130,12 @@ const SettingsPanel = () => {
     uninstallModelAsset,
     audioDevices,
     refreshAudioDevices,
+    linuxPermissions,
+    refreshLinuxPermissions,
+    authenticateLinuxPermissions,
   } = useAppStore();
 
   const [draft, setDraft] = useState<AppSettings | null>(null);
-  const [linuxPermissions, setLinuxPermissions] =
-    useState<LinuxPermissionsStatus | null>(null);
   const [linuxSetupBusy, setLinuxSetupBusy] = useState(false);
   const [linuxSetupMessage, setLinuxSetupMessage] = useState<string | null>(null);
   const [updateInfo, setUpdateInfo] = useState<UpdateCheckResult | null>(null);
@@ -169,17 +152,6 @@ const SettingsPanel = () => {
     updates: false,
     linux: false,
   });
-
-  const refreshLinuxPermissions = useCallback(async () => {
-    try {
-      const status = await invoke<LinuxPermissionsStatus>(
-        "linux_permissions_status",
-      );
-      setLinuxPermissions(status);
-    } catch (error) {
-      setLinuxPermissions(null);
-    }
-  }, []);
 
   useEffect(() => {
     void refreshLinuxPermissions();
@@ -268,7 +240,7 @@ const SettingsPanel = () => {
     setLinuxSetupBusy(true);
     setLinuxSetupMessage(null);
     try {
-      await invoke("linux_enable_permissions");
+      await authenticateLinuxPermissions();
       setLinuxSetupMessage(
         "Permissions updated. Please log out and back in for changes to take effect.",
       );
@@ -387,6 +359,7 @@ const SettingsPanel = () => {
               <GeneralSection
                 draft={draft}
                 audioDevices={audioDevices}
+                waylandSession={Boolean(linuxPermissions?.waylandSession)}
                 onChange={handleChange}
                 onRefreshDevices={refreshAudioDevices}
               />
@@ -441,10 +414,6 @@ const SettingsPanel = () => {
                 status={linuxPermissions}
                 busy={linuxSetupBusy}
                 message={linuxSetupMessage}
-                showOverlayOnWayland={draft.showOverlayOnWayland}
-                onChangeShowOverlayOnWayland={(value) =>
-                  handleChange("showOverlayOnWayland", value)
-                }
                 onEnable={handleEnableLinuxPermissions}
                 onRefresh={refreshLinuxPermissions}
               />
@@ -1281,11 +1250,13 @@ const ModelsSection = ({
 const GeneralSection = ({
   draft,
   audioDevices,
+  waylandSession,
   onChange,
   onRefreshDevices,
 }: {
   draft: AppSettings;
   audioDevices: AudioDevice[];
+  waylandSession: boolean;
   onChange: <K extends keyof AppSettings>(key: K, value: AppSettings[K]) => void;
   onRefreshDevices: () => Promise<void>;
 }) => {
@@ -1476,6 +1447,28 @@ const GeneralSection = ({
           />
         </label>
       </div>
+
+      <div className="grid gap-3">
+        <div>
+          <div className="text-sm font-semibold text-fg">HUD Overlay</div>
+          <div className="mt-0.5 text-xs text-muted">
+            Show a status overlay while dictating.
+          </div>
+        </div>
+        <label className="flex items-center justify-between gap-3 rounded-vibe border border-border bg-surface2 p-3 text-sm">
+          <span className="text-muted">Show HUD overlay</span>
+          <input
+            type="checkbox"
+            checked={draft.showHudOverlay}
+            onChange={(event) => onChange("showHudOverlay", event.target.checked)}
+          />
+        </label>
+        {waylandSession && (
+          <p className="text-xs text-muted">
+            HUD may not work on Wayland or some tiling window managers.
+          </p>
+        )}
+      </div>
     </div>
   );
 };
@@ -1484,16 +1477,12 @@ const LinuxSetupSection = ({
   status,
   busy,
   message,
-  showOverlayOnWayland,
-  onChangeShowOverlayOnWayland,
   onEnable,
   onRefresh,
 }: {
   status: LinuxPermissionsStatus | null;
   busy: boolean;
   message: string | null;
-  showOverlayOnWayland: boolean;
-  onChangeShowOverlayOnWayland: (value: boolean) => void;
   onEnable: () => Promise<void>;
   onRefresh: () => Promise<void>;
 }) => {
@@ -1607,20 +1596,6 @@ const LinuxSetupSection = ({
             </span>
           </div>
         </div>
-
-        {status.waylandSession && (
-          <label className="flex items-center justify-between gap-3 rounded-vibe border border-border bg-surface2 p-3 text-sm">
-            <span className="text-muted">Show HUD overlay on Wayland</span>
-            <div className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={showOverlayOnWayland}
-                onChange={(event) => onChangeShowOverlayOnWayland(event.target.checked)}
-              />
-              <span className="text-xs text-muted">may steal focus</span>
-            </div>
-          </label>
-        )}
 
         {status.details.length > 0 && (
           <div className="rounded-vibe border border-border bg-surface2 p-3 text-xs text-muted">

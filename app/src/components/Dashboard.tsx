@@ -15,8 +15,13 @@ const Dashboard = () => {
     models,
     settings,
     metrics,
+    linuxPermissions,
+    authenticateLinuxPermissions,
+    refreshLinuxPermissions,
   } = useAppStore();
   const [showDebug, setShowDebug] = useState(false);
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authRecheckFailed, setAuthRecheckFailed] = useState(false);
 
   const asrFamily = settings?.asrFamily ?? "parakeet";
   const whisperBackend = settings?.whisperBackend ?? "ct2";
@@ -46,6 +51,43 @@ const Dashboard = () => {
 
   const modelsReady =
     asrModel?.status.state === "installed" && vadModel?.status.state === "installed";
+
+  const waylandAuthRequired =
+    Boolean(linuxPermissions?.supported) &&
+    Boolean(linuxPermissions?.waylandSession) &&
+    !linuxPermissions?.uinputWritable;
+  const authPrereqsAvailable =
+    Boolean(linuxPermissions?.pkexecAvailable) &&
+    Boolean(linuxPermissions?.setfaclAvailable);
+
+  const handleAuthenticate = async () => {
+    setAuthBusy(true);
+    setAuthRecheckFailed(false);
+    let authErrored = false;
+    try {
+      try {
+        await authenticateLinuxPermissions();
+      } catch {
+        authErrored = true;
+      }
+
+      try {
+        await refreshLinuxPermissions();
+      } catch {
+        authErrored = true;
+      }
+
+      const refreshed = useAppStore.getState().linuxPermissions;
+      const stillNotReady =
+        Boolean(refreshed?.supported) &&
+        Boolean(refreshed?.waylandSession) &&
+        !refreshed?.uinputWritable;
+
+      setAuthRecheckFailed(authErrored || stillNotReady);
+    } finally {
+      setAuthBusy(false);
+    }
+  };
 
   const performanceMode = hudState === "performance-warning" || metrics?.performanceMode;
   const healthTone: "good" | "warn" | "bad" =
@@ -120,6 +162,39 @@ const Dashboard = () => {
       </header>
 
       <main className="flex flex-1 flex-col items-center justify-center gap-8 p-8">
+        {waylandAuthRequired && (
+          <Card className="w-full max-w-2xl border-warn/30 bg-warn/10 px-6 py-4">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div>
+                <p className="text-sm text-fg">
+                  <span className="font-semibold">Paste injection needs authentication.</span>{" "}
+                  OpenFlow needs Wayland input permissions to paste into the active app.
+                </p>
+                {authRecheckFailed && (
+                  <p className="mt-2 text-xs text-muted">
+                    Authentication completed, but permissions are still not ready. You may need to
+                    log out and back in before paste injection works.
+                  </p>
+                )}
+                {!authPrereqsAvailable && (
+                  <p className="mt-2 text-xs text-muted">
+                    Install polkit and acl (`pkexec` + `setfacl`) to enable authentication.
+                  </p>
+                )}
+              </div>
+              <Button
+                variant="primary"
+                onClick={() => {
+                  void handleAuthenticate();
+                }}
+                disabled={authBusy || !authPrereqsAvailable}
+              >
+                {authBusy ? "Authenticating..." : "Authenticate"}
+              </Button>
+            </div>
+          </Card>
+        )}
+
         <div className="w-full max-w-2xl text-center">
           <div className="mb-4 flex items-center justify-center">
             <div

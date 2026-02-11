@@ -19,7 +19,8 @@ pub struct FrontendSettings {
     pub push_to_talk_hotkey: String,
     pub toggle_to_talk_hotkey: String,
     pub hud_theme: String,
-    pub show_overlay_on_wayland: bool,
+    #[serde(alias = "showOverlayOnWayland")]
+    pub show_hud_overlay: bool,
     pub asr_family: String,
     pub whisper_backend: String,
     pub whisper_model: String,
@@ -82,7 +83,7 @@ impl Default for FrontendSettings {
             push_to_talk_hotkey: DEFAULT_PUSH_TO_TALK_HOTKEY.into(),
             toggle_to_talk_hotkey: DEFAULT_TOGGLE_TO_TALK_HOTKEY.into(),
             hud_theme: "system".into(),
-            show_overlay_on_wayland: false,
+            show_hud_overlay: false,
             asr_family: "parakeet".into(),
             whisper_backend: "ct2".into(),
             whisper_model: "small".into(),
