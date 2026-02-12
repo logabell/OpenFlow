@@ -86,14 +86,20 @@ const App = () => {
       );
 
       const performanceDispose = await listen("performance-warning", () => {
-        setHudState("performance-warning");
+        const currentState = useAppStore.getState().hudState;
+        if (currentState === "idle" || currentState === "performance-warning") {
+          setHudState("performance-warning");
+        }
       });
       unlisteners.push(() => performanceDispose());
 
       const performanceRecoveredDispose = await listen(
         "performance-recovered",
         () => {
-          setHudState("idle");
+          const currentState = useAppStore.getState().hudState;
+          if (currentState === "performance-warning") {
+            setHudState("idle");
+          }
         },
       );
       unlisteners.push(() => performanceRecoveredDispose());

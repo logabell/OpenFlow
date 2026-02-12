@@ -110,10 +110,20 @@ impl AppState {
     }
 
     pub fn set_hud_state(&self, app: &AppHandle, state: &str) {
-        {
+        let changed = {
             let mut guard = self.hud_state.lock();
-            *guard = state.to_string();
+            if guard.as_str() == state {
+                false
+            } else {
+                *guard = state.to_string();
+                true
+            }
+        };
+
+        if !changed {
+            return;
         }
+
         publish_hud_runtime_state(self, state);
         events::emit_hud_state(app, state);
     }
@@ -788,8 +798,17 @@ fn publish_hud_runtime_state(state: &AppState, hud_state: &str) {
         "session_id": std::env::var("XDG_SESSION_ID").ok(),
     });
 
-    if let Err(error) = std::fs::write(&path, payload.to_string()) {
-        tracing::debug!("failed writing runtime hud state: {error}");
+    let body = payload.to_string();
+    let temp_path = path.with_extension("json.tmp");
+
+    if let Err(error) = std::fs::write(&temp_path, body) {
+        tracing::debug!("failed writing runtime hud temp state: {error}");
+        return;
+    }
+
+    if let Err(error) = std::fs::rename(&temp_path, &path) {
+        tracing::debug!("failed promoting runtime hud state file: {error}");
+        let _ = std::fs::remove_file(&temp_path);
     }
 }
 

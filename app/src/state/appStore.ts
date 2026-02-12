@@ -216,7 +216,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     await get().refreshLinuxPermissions();
     await get().refreshGnomeHudExtensionStatus();
   },
-  setHudState: (state) => set({ hudState: state }),
+  setHudState: (state) =>
+    set((prev) => (prev.hudState === state ? prev : { hudState: state })),
   toggleSettings: (value) =>
     set((prev) => ({
       settingsVisible:

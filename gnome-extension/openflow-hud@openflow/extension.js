@@ -15,6 +15,9 @@ const ANIMATION_INTERVAL_MS = 16;
 const EXIT_HIDE_DELAY_MS = 260;
 const STARTUP_WRITE_GRACE_MS = 700;
 const TAU = Math.PI * 2;
+const LISTENING_PHASE_RATE = 0.046 / (ANIMATION_INTERVAL_MS / 1000);
+const PROCESSING_PHASE_RATE = 0.064 / (ANIMATION_INTERVAL_MS / 1000);
+const MAX_READ_FAILURES_BEFORE_HIDE = 3;
 
 const STATE_COLORS = {
     listening: {
@@ -140,6 +143,7 @@ export default class OpenFlowHudExtension extends Extension {
         this._lastSignature = null;
         this._state = "idle";
         this._phase = 0;
+        this._lastTickMicros = null;
         this._driftX = 0;
         this._driftY = 0;
         this._phaseOffsetA = Math.random() * TAU;
@@ -148,6 +152,7 @@ export default class OpenFlowHudExtension extends Extension {
         this._hideTimeoutId = null;
         this._enabledAtMicros = GLib.get_real_time();
         this._hasSeenPostEnableWrite = false;
+        this._readFailureCount = 0;
         this._lastMonitorIndex = null;
         this._displayFocusChangedId = null;
         this._workspaceChangedId = null;
@@ -273,6 +278,8 @@ export default class OpenFlowHudExtension extends Extension {
         this._colors = DEFAULT_COLORS;
         this._state = "idle";
         this._phase = 0;
+        this._lastTickMicros = null;
+        this._readFailureCount = 0;
         this._lastMonitorIndex = null;
     }
 
@@ -291,6 +298,7 @@ export default class OpenFlowHudExtension extends Extension {
             }
 
             const payload = JSON.parse(this._decoder.decode(bytes));
+            this._readFailureCount = 0;
             const enabled = payload?.enabled === true;
             const state = typeof payload?.state === "string" ? payload.state : "idle";
             const pid = Number.isInteger(payload?.pid) ? payload.pid : null;
@@ -316,8 +324,18 @@ export default class OpenFlowHudExtension extends Extension {
                 return;
             }
 
+            this._cancelHideSchedule();
+
             const signature = `${enabled ? "1" : "0"}:${state}:${pid ?? "none"}:${sessionId ?? "none"}`;
             if (signature === this._lastSignature) {
+                if (!this._container?.visible) {
+                    this._state = state;
+                    this._applyStateVisual(state);
+                    this._syncPosition();
+                    this._container.show();
+                    this._drawingArea.queue_repaint();
+                    return;
+                }
                 if (this._container?.visible) {
                     this._syncPosition();
                 }
@@ -325,14 +343,16 @@ export default class OpenFlowHudExtension extends Extension {
             }
             this._lastSignature = signature;
 
-            this._cancelHideSchedule();
             this._state = state;
             this._applyStateVisual(state);
             this._syncPosition();
             this._container.show();
             this._drawingArea.queue_repaint();
         } catch (_error) {
-            this._scheduleHide();
+            this._readFailureCount += 1;
+            if (this._readFailureCount >= MAX_READ_FAILURES_BEFORE_HIDE) {
+                this._scheduleHide();
+            }
         }
     }
 
@@ -357,7 +377,6 @@ export default class OpenFlowHudExtension extends Extension {
         if (this._container) {
             this._container.hide();
         }
-        this._state = "idle";
     }
 
     _scheduleHide() {
@@ -389,11 +408,14 @@ export default class OpenFlowHudExtension extends Extension {
             return;
         }
 
+        const nowMicros = GLib.get_monotonic_time();
+        const previousTickMicros = this._lastTickMicros ?? nowMicros;
+        this._lastTickMicros = nowMicros;
+        const deltaSeconds = Math.max(0, (nowMicros - previousTickMicros) / 1000000);
+
         const isProcessing = this._state === "processing";
-        this._phase += isProcessing ? 0.064 : 0.046;
-        if (this._phase > TAU) {
-            this._phase -= TAU;
-        }
+        const phaseRate = isProcessing ? PROCESSING_PHASE_RATE : LISTENING_PHASE_RATE;
+        this._phase += deltaSeconds * phaseRate;
 
         this._driftX = Math.sin(this._phase * 0.74 + this._phaseOffsetA) * (isProcessing ? 1.1 : 0.75);
         this._driftY = Math.cos(this._phase * 0.56 + this._phaseOffsetB) * (isProcessing ? 1.3 : 0.9);

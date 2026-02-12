@@ -1,5 +1,5 @@
-import { useId } from "react";
-import { motion } from "framer-motion";
+import { useEffect, useId } from "react";
+import { motion, useAnimationFrame, useMotionValue, useSpring } from "framer-motion";
 import { type HudState } from "../state/appStore";
 
 type OrbPalette = {
@@ -68,27 +68,98 @@ type PlasmaOrbProps = {
 const PlasmaOrb = ({ state, size = 104 }: PlasmaOrbProps) => {
   const palette = paletteForState(state);
   const isProcessing = state === "processing";
-  const speed = isProcessing ? 1.12 : 1.62;
+  const ringArcCycle = 278;
+  const sparkRingCycle = 127;
+  const longEllipseCycle = 260;
+  const midEllipseCycle = 204;
+  const shortEllipseCycle = 234;
   const clipId = useId().replace(/:/g, "");
+
+  const stateBlend = useSpring(isProcessing ? 1 : 0, {
+    stiffness: 88,
+    damping: 24,
+    mass: 0.5,
+  });
+
+  useEffect(() => {
+    stateBlend.set(isProcessing ? 1 : 0);
+  }, [isProcessing, stateBlend]);
+
+  const driftX = useMotionValue(0);
+  const driftY = useMotionValue(0);
+  const driftRotate = useMotionValue(0);
+
+  const ringArcOffset = useMotionValue(0);
+  const sparkRingOffset = useMotionValue(0);
+  const longEllipseOffset = useMotionValue(0);
+  const midEllipseOffset = useMotionValue(0);
+  const shortEllipseOffset = useMotionValue(0);
+
+  const ringArcOpacity = useMotionValue(0.28);
+  const sparkRingOpacity = useMotionValue(0.14);
+  const longEllipseOpacity = useMotionValue(0.2);
+  const midEllipseOpacity = useMotionValue(0.12);
+  const shortEllipseOpacity = useMotionValue(0.1);
+
+  const spinForward = useMotionValue(0);
+  const spinReverse = useMotionValue(0);
+
+  useAnimationFrame((timeMs) => {
+    const t = timeMs / 1000;
+    const blend = stateBlend.get();
+    const tau = Math.PI * 2;
+    const mix = (listeningValue: number, processingValue: number) =>
+      listeningValue + (processingValue - listeningValue) * blend;
+
+    const driftDuration = 8.8 * mix(1.62, 1.12);
+    const driftTheta = (tau * t) / driftDuration;
+    const driftXAmplitude = mix(0.7, 1.0);
+    const driftYAmplitude = mix(0.9, 1.3);
+    const driftRotateAmplitude = mix(0.34, 0.55);
+
+    driftX.set(
+      driftXAmplitude *
+        (0.78 * Math.sin(driftTheta) + 0.22 * Math.sin(driftTheta * 2.17 + 0.8)),
+    );
+    driftY.set(
+      -driftYAmplitude *
+        (0.82 * Math.sin(driftTheta + 0.35) + 0.18 * Math.sin(driftTheta * 1.93 + 2.1)),
+    );
+    driftRotate.set(driftRotateAmplitude * Math.sin(driftTheta + 1.2));
+
+    const ringArcDuration = mix(5.4, 3.0);
+    const sparkRingDuration = mix(6.7, 3.8);
+    const longEllipseDuration = mix(5.9, 3.2);
+    const midEllipseDuration = mix(5.3, 2.9);
+    const shortEllipseDuration = mix(4.9, 2.6);
+    const spinForwardDuration = mix(8.6, 5.6);
+    const spinReverseDuration = mix(7.6, 4.8);
+
+    ringArcOffset.set(-(t / ringArcDuration) * ringArcCycle);
+    sparkRingOffset.set((t / sparkRingDuration) * sparkRingCycle);
+    longEllipseOffset.set((t / longEllipseDuration) * longEllipseCycle);
+    midEllipseOffset.set(-(t / midEllipseDuration) * midEllipseCycle);
+    shortEllipseOffset.set((t / shortEllipseDuration) * shortEllipseCycle);
+
+    spinForward.set((t / spinForwardDuration) * 360);
+    spinReverse.set(-(t / spinReverseDuration) * 360);
+
+    const phaseOpacity = (duration: number, low: number, high: number, phaseOffset = 0) => {
+      const wave = 0.5 + 0.5 * Math.sin((tau * t) / duration - Math.PI / 2 + phaseOffset);
+      return low + (high - low) * wave;
+    };
+
+    ringArcOpacity.set(phaseOpacity(ringArcDuration, 0.28, 0.7, 0));
+    sparkRingOpacity.set(phaseOpacity(sparkRingDuration, 0.14, 0.42, 0.5));
+    longEllipseOpacity.set(phaseOpacity(longEllipseDuration, 0.2, 0.48, 0.9));
+    midEllipseOpacity.set(phaseOpacity(midEllipseDuration, 0.12, 0.32, 1.3));
+    shortEllipseOpacity.set(phaseOpacity(shortEllipseDuration, 0.1, 0.26, 1.8));
+  });
 
   return (
     <motion.div
       className="relative"
-      style={{ width: size, height: size }}
-      animate={
-        isProcessing
-          ? {
-              x: [0, 1.0, -0.8, 0],
-              y: [0, -1.3, 0.9, 0],
-              rotate: [0, 0.55, -0.42, 0],
-            }
-          : {
-              x: [0, 0.7, -0.5, 0],
-              y: [0, -0.9, 0.6, 0],
-              rotate: [0, 0.34, -0.24, 0],
-            }
-      }
-      transition={{ duration: 8.8 * speed, repeat: Number.POSITIVE_INFINITY, ease: "easeInOut" }}
+      style={{ width: size, height: size, x: driftX, y: driftY, rotate: driftRotate }}
       aria-hidden="true"
     >
       <div
@@ -119,8 +190,7 @@ const PlasmaOrb = ({ state, size = 104 }: PlasmaOrbProps) => {
           strokeWidth="1.45"
           strokeLinecap="round"
           strokeDasharray="54 32 18 68 24 82"
-          animate={{ strokeDashoffset: [0, isProcessing ? -224 : -154], opacity: [0.28, 0.7, 0.28] }}
-          transition={{ duration: (isProcessing ? 1.8 : 3.4) * speed, repeat: Number.POSITIVE_INFINITY, ease: "linear" }}
+          style={{ strokeDashoffset: ringArcOffset, opacity: ringArcOpacity }}
         />
 
         <motion.circle
@@ -132,16 +202,11 @@ const PlasmaOrb = ({ state, size = 104 }: PlasmaOrbProps) => {
           strokeLinecap="round"
           strokeDasharray="12 12 8 24 6 34 9 22"
           filter={`url(#orb-soft-${clipId})`}
-          animate={{ strokeDashoffset: [0, isProcessing ? 186 : 124], opacity: [0.14, 0.42, 0.14] }}
-          transition={{ duration: (isProcessing ? 2.2 : 4.2) * speed, repeat: Number.POSITIVE_INFINITY, ease: "linear" }}
+          style={{ strokeDashoffset: sparkRingOffset, opacity: sparkRingOpacity }}
         />
 
         <g clipPath={`url(#orb-clip-${clipId})`}>
-          <motion.g
-            style={{ transformOrigin: "50% 50%" }}
-            animate={{ rotate: [0, 360] }}
-            transition={{ duration: (isProcessing ? 5.6 : 8.6) * speed, repeat: Number.POSITIVE_INFINITY, ease: "linear" }}
-          >
+          <motion.g style={{ transformOrigin: "50% 50%", rotate: spinForward }}>
             <motion.ellipse
               cx="50"
               cy="50"
@@ -152,16 +217,11 @@ const PlasmaOrb = ({ state, size = 104 }: PlasmaOrbProps) => {
               strokeDasharray="92 168"
               strokeLinecap="round"
               filter={`url(#orb-soft-${clipId})`}
-              animate={{ strokeDashoffset: [0, isProcessing ? 158 : 112], opacity: [0.2, 0.48, 0.2] }}
-              transition={{ duration: (isProcessing ? 1.7 : 3.4) * speed, repeat: Number.POSITIVE_INFINITY, ease: "linear" }}
+              style={{ strokeDashoffset: longEllipseOffset, opacity: longEllipseOpacity }}
             />
           </motion.g>
 
-          <motion.g
-            style={{ transformOrigin: "50% 50%" }}
-            animate={{ rotate: [360, 0] }}
-            transition={{ duration: (isProcessing ? 4.8 : 7.6) * speed, repeat: Number.POSITIVE_INFINITY, ease: "linear" }}
-          >
+          <motion.g style={{ transformOrigin: "50% 50%", rotate: spinReverse }}>
             <motion.ellipse
               cx="50"
               cy="50"
@@ -172,8 +232,7 @@ const PlasmaOrb = ({ state, size = 104 }: PlasmaOrbProps) => {
               strokeDasharray="66 138"
               strokeLinecap="round"
               filter={`url(#orb-soft-${clipId})`}
-              animate={{ strokeDashoffset: [0, isProcessing ? -144 : -98], opacity: [0.12, 0.32, 0.12] }}
-              transition={{ duration: (isProcessing ? 1.6 : 3.2) * speed, repeat: Number.POSITIVE_INFINITY, ease: "linear" }}
+              style={{ strokeDashoffset: midEllipseOffset, opacity: midEllipseOpacity }}
             />
           </motion.g>
 
@@ -187,8 +246,7 @@ const PlasmaOrb = ({ state, size = 104 }: PlasmaOrbProps) => {
             strokeDasharray="52 182"
             strokeLinecap="round"
             filter={`url(#orb-soft-${clipId})`}
-            animate={{ strokeDashoffset: [0, isProcessing ? 122 : 84], opacity: [0.1, 0.26, 0.1] }}
-            transition={{ duration: (isProcessing ? 1.4 : 2.8) * speed, repeat: Number.POSITIVE_INFINITY, ease: "linear" }}
+            style={{ strokeDashoffset: shortEllipseOffset, opacity: shortEllipseOpacity }}
           />
         </g>
       </svg>
