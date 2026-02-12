@@ -180,6 +180,10 @@ fn paste_text(
         first_attempt
     );
 
+    if matches!(clipboard_backend(), ClipboardBackend::X11) {
+        return paste_text_x11(text, shortcut);
+    }
+
     let previous = snapshot_clipboard().ok().flatten();
 
     // Ensure transcript is available on the clipboard before we inject the paste.
@@ -255,6 +259,129 @@ fn paste_text(
         transcript_on_clipboard: true,
     })?;
 
+    info!("paste_attempt_done");
+    Ok(())
+}
+
+fn paste_text_x11(text: &str, shortcut: PasteShortcut) -> Result<(), PasteFailure> {
+    use std::thread::sleep;
+    use std::time::{Duration, Instant};
+
+    let previous = snapshot_clipboard().ok().flatten();
+
+    if !binary_in_path("xclip") {
+        return Err(PasteFailure {
+            step: PasteFailureStep::ClipboardWrite,
+            kind: PasteFailureKind::Failed,
+            message: "xclip not found (install xclip)".to_string(),
+            transcript_on_clipboard: false,
+        });
+    }
+
+    let mut owner = Command::new(resolve_binary("xclip"))
+        .args(["-selection", "clipboard", "-in", "-loops", "1"])
+        .stdin(Stdio::piped())
+        .spawn()
+        .map_err(|err| PasteFailure {
+            step: PasteFailureStep::ClipboardWrite,
+            kind: PasteFailureKind::Failed,
+            message: format!("xclip owner start failed: {err}"),
+            transcript_on_clipboard: false,
+        })?;
+
+    if let Some(stdin) = owner.stdin.as_mut() {
+        stdin
+            .write_all(text.as_bytes())
+            .map_err(|err| PasteFailure {
+                step: PasteFailureStep::ClipboardWrite,
+                kind: PasteFailureKind::Failed,
+                message: format!("xclip owner write failed: {err}"),
+                transcript_on_clipboard: false,
+            })?;
+    }
+    owner.stdin.take();
+
+    info!("x11_paste_owner_started");
+    sleep(Duration::from_millis(30));
+
+    let backend = match send_paste_chord(shortcut) {
+        Ok(backend) => backend,
+        Err(error) => {
+            let _ = owner.kill();
+            let _ = owner.wait();
+            let _ = set_clipboard_text_x11(text);
+            return Err(PasteFailure {
+                step: PasteFailureStep::KeyInject,
+                kind: PasteFailureKind::Failed,
+                message: error.to_string(),
+                transcript_on_clipboard: true,
+            });
+        }
+    };
+
+    info!("paste_chord_sent backend={backend}");
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut request_observed = false;
+    loop {
+        match owner.try_wait() {
+            Ok(Some(status)) => {
+                request_observed = status.success();
+                break;
+            }
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    break;
+                }
+                sleep(Duration::from_millis(10));
+            }
+            Err(_) => break,
+        }
+    }
+
+    if !request_observed {
+        let _ = owner.kill();
+        let _ = owner.wait();
+        let _ = set_clipboard_text_x11(text);
+        return Err(PasteFailure {
+            step: PasteFailureStep::ClipboardWrite,
+            kind: PasteFailureKind::Unconfirmed,
+            message: "X11 paste request not observed before timeout; transcript left on clipboard."
+                .to_string(),
+            transcript_on_clipboard: true,
+        });
+    }
+
+    info!("x11_paste_request_observed");
+
+    let Some(previous) = previous else {
+        return Err(PasteFailure {
+            step: PasteFailureStep::ClipboardWrite,
+            kind: PasteFailureKind::Unconfirmed,
+            message: "Previous clipboard could not be snapshotted; transcript left on clipboard."
+                .to_string(),
+            transcript_on_clipboard: true,
+        });
+    };
+
+    if !clipboard_equals(text.as_bytes()) {
+        return Err(PasteFailure {
+            step: PasteFailureStep::ClipboardWrite,
+            kind: PasteFailureKind::Unconfirmed,
+            message: "Clipboard changed during paste window; not restoring previous clipboard."
+                .to_string(),
+            transcript_on_clipboard: false,
+        });
+    }
+
+    restore_clipboard(previous).map_err(|err| PasteFailure {
+        step: PasteFailureStep::ClipboardWrite,
+        kind: PasteFailureKind::Unconfirmed,
+        message: format!("Failed to restore clipboard: {err}"),
+        transcript_on_clipboard: true,
+    })?;
+
+    info!("x11_paste_clipboard_restored");
     info!("paste_attempt_done");
     Ok(())
 }
