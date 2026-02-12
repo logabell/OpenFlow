@@ -46,6 +46,11 @@ type PasteFailedPayload = {
   linux?: LinuxPermissionsStatus;
 };
 
+type TranscriptionSkippedPayload = {
+  reason: string;
+  message: string;
+};
+
 const App = () => {
   const {
     initialize,
@@ -248,6 +253,20 @@ const App = () => {
         },
       );
       unlisteners.push(() => pasteUnconfirmedDispose());
+
+      const transcriptionSkippedDispose = await listen<TranscriptionSkippedPayload>(
+        "transcription-skipped",
+        (event) => {
+          const payload = event.payload;
+          if (!payload) return;
+          notify({
+            title: "No output",
+            description: `${payload.message} (${payload.reason})`,
+            variant: "warning",
+          });
+        },
+      );
+      unlisteners.push(() => transcriptionSkippedDispose());
 
       // Backend logs are pulled on-demand in DebugPanel.
     };

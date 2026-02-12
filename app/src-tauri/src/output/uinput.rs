@@ -12,10 +12,10 @@ pub const VIRTUAL_KEYBOARD_NAME: &str = "OpenFlow Virtual Keyboard";
 static VIRTUAL_KEYBOARD: Lazy<Mutex<Option<evdev::uinput::VirtualDevice>>> =
     Lazy::new(|| Mutex::new(None));
 
-fn get_or_create_virtual_keyboard() -> anyhow::Result<()> {
+fn get_or_create_virtual_keyboard() -> anyhow::Result<bool> {
     let mut guard = VIRTUAL_KEYBOARD.lock();
     if guard.is_some() {
-        return Ok(());
+        return Ok(false);
     }
 
     let mut keys = AttributeSet::<Key>::new();
@@ -32,11 +32,21 @@ fn get_or_create_virtual_keyboard() -> anyhow::Result<()> {
         .map_err(|err| anyhow::anyhow!(err))?;
 
     *guard = Some(device);
+    Ok(true)
+}
+
+pub fn prepare_virtual_keyboard() -> anyhow::Result<()> {
+    let created = get_or_create_virtual_keyboard()?;
+    if created {
+        // Give the compositor/input stack a brief moment to recognize the device
+        // before we attempt the first synthesized chord.
+        sleep(Duration::from_millis(80));
+    }
     Ok(())
 }
 
 pub fn send_paste(shortcut: PasteShortcut) -> anyhow::Result<()> {
-    get_or_create_virtual_keyboard()?;
+    let _ = get_or_create_virtual_keyboard()?;
 
     let mut guard = VIRTUAL_KEYBOARD.lock();
     let device = guard

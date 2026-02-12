@@ -1,10 +1,11 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(debug_assertions)]
 use crate::output::logs;
 use serde::{Deserialize, Serialize};
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::output::uinput;
 use crate::output::x11;
@@ -85,12 +86,26 @@ impl Default for PasteShortcut {
 
 pub struct OutputInjector {
     paste_shortcut: std::sync::Mutex<PasteShortcut>,
+    first_paste_attempt: AtomicBool,
 }
 
 impl OutputInjector {
     pub fn new() -> Self {
         Self {
             paste_shortcut: std::sync::Mutex::new(PasteShortcut::default()),
+            first_paste_attempt: AtomicBool::new(true),
+        }
+    }
+
+    pub fn prewarm(&self) {
+        if !is_wayland_session() {
+            return;
+        }
+
+        if let Err(error) = uinput::prepare_virtual_keyboard() {
+            warn!("paste injector prewarm failed: {error}");
+        } else {
+            info!("paste injector prewarmed backend=uinput-wayland");
         }
     }
 
@@ -114,26 +129,29 @@ impl OutputInjector {
             .map(|guard| *guard)
             .unwrap_or_default();
         match action {
-            OutputAction::Paste => match paste_text(text, shortcut) {
-                Ok(()) => {
-                    #[cfg(debug_assertions)]
-                    logs::push_log(format!("Paste -> {}", text));
-                    Ok(())
-                }
-                Err(error) => {
-                    match error.kind {
-                        PasteFailureKind::Unconfirmed => {
-                            warn!("Paste unconfirmed: {error}");
-                        }
-                        PasteFailureKind::Failed => {
-                            warn!("Paste failed: {error}");
-                        }
+            OutputAction::Paste => {
+                let first_attempt = self.first_paste_attempt.swap(false, Ordering::SeqCst);
+                match paste_text(text, shortcut, first_attempt) {
+                    Ok(()) => {
+                        #[cfg(debug_assertions)]
+                        logs::push_log(format!("Paste -> {}", text));
+                        Ok(())
                     }
-                    #[cfg(debug_assertions)]
-                    logs::push_log(format!("Paste {} ({})", error.kind.as_str(), error));
-                    Err(OutputInjectionError::Paste(error))
+                    Err(error) => {
+                        match error.kind {
+                            PasteFailureKind::Unconfirmed => {
+                                warn!("Paste unconfirmed: {error}");
+                            }
+                            PasteFailureKind::Failed => {
+                                warn!("Paste failed: {error}");
+                            }
+                        }
+                        #[cfg(debug_assertions)]
+                        logs::push_log(format!("Paste {} ({})", error.kind.as_str(), error));
+                        Err(OutputInjectionError::Paste(error))
+                    }
                 }
-            },
+            }
             OutputAction::Copy => set_clipboard_text(text)
                 .map_err(|error| {
                     warn!("Copy failed: {error}");
@@ -144,9 +162,23 @@ impl OutputInjector {
     }
 }
 
-fn paste_text(text: &str, shortcut: PasteShortcut) -> Result<(), PasteFailure> {
+fn paste_text(
+    text: &str,
+    shortcut: PasteShortcut,
+    first_attempt: bool,
+) -> Result<(), PasteFailure> {
     use std::thread::sleep;
     use std::time::Duration;
+
+    info!(
+        "paste_attempt_start chars={} shortcut={} first_since_launch={}",
+        text.len(),
+        match shortcut {
+            PasteShortcut::CtrlV => "ctrl-v",
+            PasteShortcut::CtrlShiftV => "ctrl-shift-v",
+        },
+        first_attempt
+    );
 
     let previous = snapshot_clipboard().ok().flatten();
 
@@ -169,16 +201,26 @@ fn paste_text(text: &str, shortcut: PasteShortcut) -> Result<(), PasteFailure> {
         });
     }
 
-    if let Err(error) = send_paste_chord(shortcut) {
-        // Keep transcript on the clipboard so the user can paste manually.
-        let _ = set_clipboard_text(text);
-        return Err(PasteFailure {
-            step: PasteFailureStep::KeyInject,
-            kind: PasteFailureKind::Failed,
-            message: error.to_string(),
-            transcript_on_clipboard: true,
-        });
+    if first_attempt && is_wayland_session() {
+        // First Wayland paste after launch can race with compositor/input initialization.
+        sleep(Duration::from_millis(120));
     }
+
+    let backend = match send_paste_chord(shortcut) {
+        Ok(backend) => backend,
+        Err(error) => {
+            // Keep transcript on the clipboard so the user can paste manually.
+            let _ = set_clipboard_text(text);
+            return Err(PasteFailure {
+                step: PasteFailureStep::KeyInject,
+                kind: PasteFailureKind::Failed,
+                message: error.to_string(),
+                transcript_on_clipboard: true,
+            });
+        }
+    };
+
+    info!("paste_chord_sent backend={backend}");
 
     // Hold the transcript as the clipboard selection long enough for the target app
     // to request it. Clipboard managers may probe immediately; we must not restore early.
@@ -213,6 +255,7 @@ fn paste_text(text: &str, shortcut: PasteShortcut) -> Result<(), PasteFailure> {
         transcript_on_clipboard: true,
     })?;
 
+    info!("paste_attempt_done");
     Ok(())
 }
 
@@ -222,18 +265,19 @@ fn is_wayland_session() -> bool {
     xdg_session_type == "wayland" || !wayland_display.is_empty()
 }
 
-fn send_paste_chord(shortcut: PasteShortcut) -> anyhow::Result<()> {
+fn send_paste_chord(shortcut: PasteShortcut) -> anyhow::Result<&'static str> {
     if is_wayland_session() {
-        return uinput::send_paste(shortcut);
+        uinput::send_paste(shortcut)?;
+        return Ok("uinput-wayland");
     }
 
     // Prefer X11 injection on X11 sessions (e.g. VNC/Xvfb).
     match x11::send_paste(shortcut) {
-        Ok(()) => Ok(()),
+        Ok(()) => Ok("x11"),
         Err(x11_err) => {
             // Fall back to uinput if available.
             match uinput::send_paste(shortcut) {
-                Ok(()) => Ok(()),
+                Ok(()) => Ok("uinput-fallback"),
                 Err(uinput_err) => anyhow::bail!(
                     "X11 injection failed: {x11_err}; uinput injection failed: {uinput_err}"
                 ),

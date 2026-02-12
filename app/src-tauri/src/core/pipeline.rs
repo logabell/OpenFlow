@@ -150,6 +150,8 @@ impl SpeechPipeline {
         let preprocessor = AudioPreprocessor::new();
         let audio = AudioPipeline::spawn(audio_config);
         let vad = VoiceActivityDetector::new(vad_config.clone());
+        let injector = OutputInjector::new();
+        injector.prewarm();
         let inner = Arc::new(SpeechPipelineInner {
             audio,
             preprocessor: Mutex::new(preprocessor),
@@ -158,7 +160,7 @@ impl SpeechPipeline {
             vad_trim: Mutex::new(VadTrimState::default()),
             asr: AsrEngine::new(asr_config),
             autoclean: AutocleanService::new(),
-            injector: OutputInjector::new(),
+            injector,
             output_mode: Mutex::new(OutputMode::default()),
             metrics: Arc::new(Mutex::new(EngineMetrics::default())),
             mode: Arc::new(Mutex::new(AutocleanMode::Fast)),
