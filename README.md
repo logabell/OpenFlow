@@ -23,7 +23,7 @@ curl -fsSL https://github.com/logabell/OpenFlow/releases/latest/download/install
 Non-interactive (CI-friendly):
 
 ```bash
-curl -fsSL https://github.com/logabell/OpenFlow/releases/latest/download/install.sh -o /tmp/openflow-install.sh && bash /tmp/openflow-install.sh --yes --models=parakeet,silero
+curl -fsSL https://github.com/logabell/OpenFlow/releases/latest/download/install.sh -o /tmp/openflow-install.sh && bash /tmp/openflow-install.sh --yes
 ```
 
 Uninstall:

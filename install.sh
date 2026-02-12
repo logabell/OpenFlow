@@ -55,6 +55,15 @@ sudo_run() {
 ACTION="install"
 YES=0
 
+# CI / automation helpers (kept out of CLI flags on purpose)
+# - OPENFLOW_SKIP_MODELS=1: skip downloading models during install
+SKIP_MODELS=0
+case "${OPENFLOW_SKIP_MODELS:-}" in
+  1|true|TRUE|yes|YES)
+    SKIP_MODELS=1
+    ;;
+esac
+
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -h|--help)
@@ -897,6 +906,11 @@ install_icons
 install_desktop_entry
 install_gnome_extension
 configure_permissions
-download_models
+
+if [ "$SKIP_MODELS" -eq 1 ]; then
+  echo "Skipping model downloads (OPENFLOW_SKIP_MODELS=1)."
+else
+  download_models
+fi
 
 echo "Installed. Launch with: openflow"

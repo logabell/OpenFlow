@@ -124,7 +124,7 @@ jobs:
           set -eux
           ASSETS_DIR="$(pwd)/dist"
           BASE_URL="file://${ASSETS_DIR}"
-          sudo -u tester -H env OPENFLOW_BASE_URL="${BASE_URL}" bash "${ASSETS_DIR}/install.sh" --yes --no-models
+          sudo -u tester -H env OPENFLOW_BASE_URL="${BASE_URL}" OPENFLOW_SKIP_MODELS=1 bash "${ASSETS_DIR}/install.sh" --yes
 
       - name: Verify installed binary links
         run: |
