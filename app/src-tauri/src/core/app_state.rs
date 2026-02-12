@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Instant;
 
@@ -50,6 +50,15 @@ pub enum AsrWarmupState {
     Error,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OperationalReadiness {
+    Ready,
+    AsrWarming,
+    AsrError,
+    AudioUnavailable,
+    AudioStale,
+}
+
 #[derive(Debug, Clone)]
 struct AsrWarmupTracker {
     state: AsrWarmupState,
@@ -74,6 +83,9 @@ pub struct AppState {
     hud_state: Arc<Mutex<String>>,
     asr_warmup: Arc<Mutex<AsrWarmupTracker>>,
     asr_warmup_generation: Arc<AtomicU64>,
+    hotkey_down: Arc<AtomicBool>,
+    hold_to_ready_armed: Arc<AtomicBool>,
+    hold_to_ready_waiter_running: Arc<AtomicBool>,
 }
 
 impl AppState {
@@ -98,6 +110,9 @@ impl AppState {
                 last_error: None,
             })),
             asr_warmup_generation: Arc::new(AtomicU64::new(0)),
+            hotkey_down: Arc::new(AtomicBool::new(false)),
+            hold_to_ready_armed: Arc::new(AtomicBool::new(false)),
+            hold_to_ready_waiter_running: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -261,19 +276,20 @@ impl AppState {
             None
         };
 
-        match self.asr_warmup_state() {
-            AsrWarmupState::Warming => {
-                tracing::info!("hotkey_ignored_engine_warming");
+        match self.operational_readiness() {
+            OperationalReadiness::AsrWarming => {
+                tracing::info!("backend_readiness waiting=asr-warming");
                 if use_window_overlay {
                     show_status_overlay(app, target_monitor);
                 } else {
                     hide_status_overlay(app);
                 }
                 self.set_hud_state(app, "warming");
+                self.arm_hold_to_ready(app);
                 return;
             }
-            AsrWarmupState::Error => {
-                tracing::warn!("hotkey_ignored_engine_error");
+            OperationalReadiness::AsrError => {
+                tracing::warn!("backend_readiness waiting=asr-error");
                 if use_window_overlay {
                     show_status_overlay(app, target_monitor);
                 } else {
@@ -282,7 +298,29 @@ impl AppState {
                 self.set_hud_state(app, "asr-error");
                 return;
             }
-            AsrWarmupState::Ready => {}
+            OperationalReadiness::AudioUnavailable => {
+                tracing::info!("backend_readiness waiting=audio-unavailable");
+                if use_window_overlay {
+                    show_status_overlay(app, target_monitor);
+                } else {
+                    hide_status_overlay(app);
+                }
+                self.set_hud_state(app, "warming");
+                self.arm_hold_to_ready(app);
+                return;
+            }
+            OperationalReadiness::AudioStale => {
+                tracing::info!("backend_readiness waiting=audio-stale");
+                if use_window_overlay {
+                    show_status_overlay(app, target_monitor);
+                } else {
+                    hide_status_overlay(app);
+                }
+                self.set_hud_state(app, "warming");
+                self.arm_hold_to_ready(app);
+                return;
+            }
+            OperationalReadiness::Ready => {}
         }
 
         let should_start = {
@@ -315,6 +353,18 @@ impl AppState {
         }
 
         self.set_hud_state(app, "listening");
+    }
+
+    pub fn set_hotkey_down(&self, app: &AppHandle, is_down: bool) {
+        self.hotkey_down.store(is_down, Ordering::SeqCst);
+        if !is_down {
+            self.hold_to_ready_armed.store(false, Ordering::SeqCst);
+            return;
+        }
+
+        if self.hold_to_ready_armed.load(Ordering::SeqCst) {
+            self.spawn_hold_to_ready_waiter(app);
+        }
     }
 
     pub fn mark_processing(&self, app: &AppHandle) {
@@ -363,17 +413,21 @@ impl AppState {
             self.set_hud_state(app, "idle");
         }
 
+        let should_finalize = !matches!(previous, SessionState::Idle);
+
         tauri::async_runtime::spawn(async move {
-            if let Some(pipeline) = pipeline {
-                if let Err(error) = tokio::task::spawn_blocking(move || {
-                    pipeline.set_listening(false);
-                })
-                .await
-                {
-                    warn!("failed to finalize dictation: {error:?}");
+            if should_finalize {
+                if let Some(pipeline) = pipeline {
+                    if let Err(error) = tokio::task::spawn_blocking(move || {
+                        pipeline.set_listening(false);
+                    })
+                    .await
+                    {
+                        warn!("failed to finalize dictation: {error:?}");
+                    }
+                } else {
+                    debug!("complete_session: pipeline not initialized");
                 }
-            } else {
-                debug!("complete_session: pipeline not initialized");
             }
 
             {
@@ -425,6 +479,72 @@ impl AppState {
             .read_frontend()
             .map(|settings| settings.hotkey_mode)
             .unwrap_or_else(|_| "hold".into())
+    }
+
+    fn operational_readiness(&self) -> OperationalReadiness {
+        match self.asr_warmup_state() {
+            AsrWarmupState::Warming => return OperationalReadiness::AsrWarming,
+            AsrWarmupState::Error => return OperationalReadiness::AsrError,
+            AsrWarmupState::Ready => {}
+        }
+
+        let pipeline = { self.pipeline.lock().as_ref().cloned() };
+        let Some(pipeline) = pipeline else {
+            return OperationalReadiness::AudioUnavailable;
+        };
+
+        if pipeline.has_recent_audio_ingress(std::time::Duration::from_secs(2)) {
+            OperationalReadiness::Ready
+        } else {
+            OperationalReadiness::AudioStale
+        }
+    }
+
+    fn arm_hold_to_ready(&self, app: &AppHandle) {
+        self.hold_to_ready_armed.store(true, Ordering::SeqCst);
+        if self.hotkey_down.load(Ordering::SeqCst) {
+            self.spawn_hold_to_ready_waiter(app);
+        }
+    }
+
+    fn spawn_hold_to_ready_waiter(&self, app: &AppHandle) {
+        if self
+            .hold_to_ready_waiter_running
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return;
+        }
+
+        let app_handle = app.clone();
+        tauri::async_runtime::spawn(async move {
+            loop {
+                let Some(state) = app_handle.try_state::<AppState>() else {
+                    break;
+                };
+
+                if !state.hold_to_ready_armed.load(Ordering::SeqCst)
+                    || !state.hotkey_down.load(Ordering::SeqCst)
+                {
+                    break;
+                }
+
+                if state.operational_readiness() == OperationalReadiness::Ready {
+                    tracing::info!("hold_to_ready_autostart");
+                    state.hold_to_ready_armed.store(false, Ordering::SeqCst);
+                    state.start_session(&app_handle);
+                    break;
+                }
+
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+
+            if let Some(state) = app_handle.try_state::<AppState>() {
+                state
+                    .hold_to_ready_waiter_running
+                    .store(false, Ordering::SeqCst);
+            }
+        });
     }
 
     pub fn initialize_pipeline(&self, app: &AppHandle) -> Result<()> {

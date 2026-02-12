@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crossbeam_channel::{bounded, Receiver, Sender};
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use tauri::async_runtime::JoinHandle;
 #[cfg(feature = "real-audio")]
@@ -32,9 +33,11 @@ pub enum AudioEvent {
 
 pub struct AudioPipeline {
     #[cfg(feature = "real-audio")]
-    _real_audio: Option<RealAudioHandle>,
+    real_audio: Arc<Mutex<Option<RealAudioHandle>>>,
     _worker: JoinHandle<()>,
     receiver: Receiver<AudioEvent>,
+    sender: Sender<AudioEvent>,
+    config: Arc<AudioPipelineConfig>,
     device_id: Option<String>,
     sample_rate: u32,
     synthetic: bool,
@@ -73,6 +76,8 @@ impl AudioPipeline {
         let sample_rate: u32 = DEFAULT_SAMPLE_RATE;
 
         let use_synthetic = real_audio.is_none();
+        #[cfg(feature = "real-audio")]
+        let real_audio = Arc::new(Mutex::new(real_audio));
         let worker = tauri::async_runtime::spawn(async move {
             info!("audio pipeline worker started (synthetic={use_synthetic})");
             let mut phase = 0.0f32;
@@ -103,9 +108,11 @@ impl AudioPipeline {
 
         Self {
             #[cfg(feature = "real-audio")]
-            _real_audio: real_audio,
+            real_audio,
             _worker: worker,
             receiver: out_rx,
+            sender: tx,
+            config: Arc::clone(&config),
             device_id: config.device_id.clone(),
             sample_rate,
             synthetic: use_synthetic,
@@ -126,6 +133,26 @@ impl AudioPipeline {
 
     pub fn is_synthetic(&self) -> bool {
         self.synthetic
+    }
+
+    pub fn restart_capture(&self) -> anyhow::Result<bool> {
+        #[cfg(feature = "real-audio")]
+        {
+            let mut guard = self.real_audio.lock();
+            if guard.is_none() {
+                return Ok(false);
+            }
+
+            let replacement =
+                RealAudioHandle::spawn(Arc::clone(&self.config), self.sender.clone())?;
+            *guard = Some(replacement);
+            return Ok(true);
+        }
+
+        #[cfg(not(feature = "real-audio"))]
+        {
+            Ok(false)
+        }
     }
 }
 

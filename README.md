@@ -5,6 +5,8 @@ Hold a hotkey to talk, release to transcribe on-device, optionally clean up the 
 
 - OS support: Linux only (Wayland + X11)
 - CPU arch: x86_64 only
+- Display servers: Wayland + X11 (X11 supported)
+- HUD: built-in overlay window on most setups; optional GNOME Shell HUD extension for GNOME Wayland
 
 Tested / supported distro baselines:
 - Ubuntu 24.04+
@@ -53,6 +55,15 @@ At runtime, OpenFlow follows this pipeline:
 4) Transcribe on-device (Parakeet by default; Whisper optional)
 5) Optional deterministic cleanup (Tier-1 autoclean)
 6) Paste into the active field while preserving your clipboard
+
+## HUD (Visual Dictation Status)
+
+OpenFlow can show a small on-screen HUD orb to indicate `warming` / `listening` / `processing`.
+
+- GNOME Wayland: ships an optional GNOME Shell extension (`OpenFlow HUD`, UUID `openflow-hud@openflow`) for compositor-native rendering
+- Other Wayland compositors + X11: uses a regular overlay window (best-effort; some tiling/fullscreen setups may hide or constrain it)
+
+You can toggle the HUD in `Settings` -> `HUD Overlay`.
 
 ## Linux Permissions (Wayland + X11)
 

@@ -26,10 +26,26 @@ struct DiagnosticsState {
     vad: Option<VadObservation>,
 }
 
+#[derive(Debug)]
+struct AudioWatchdogState {
+    last_frame_ingress: Instant,
+    seen_frame: bool,
+    consecutive_restarts: u32,
+    last_restart_attempt: Option<Instant>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NoOutputReason {
+    code: &'static str,
+    message: &'static str,
+}
+
 const VAD_MIN_SPEECH_MS: u64 = 350;
 const VAD_PRE_ROLL_MS: u64 = 200;
 const VAD_POST_ROLL_MS: u64 = 500;
 const VAD_MAX_TRAILING_SILENCE_MS: u64 = 600;
+const AUDIO_INGRESS_STALE_THRESHOLD: Duration = Duration::from_secs(2);
+const AUDIO_WATCHDOG_TICK: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Default)]
 struct VadTrimState {
@@ -121,6 +137,7 @@ struct SpeechPipelineInner {
     audio_thread: Mutex<Option<std::thread::JoinHandle<()>>>,
     listening: AtomicBool,
     diagnostics: Mutex<DiagnosticsState>,
+    audio_watchdog: Mutex<AudioWatchdogState>,
 }
 
 impl SpeechPipeline {
@@ -155,10 +172,17 @@ impl SpeechPipeline {
                 peak_max: 0.0,
                 vad: None,
             }),
+            audio_watchdog: Mutex::new(AudioWatchdogState {
+                last_frame_ingress: Instant::now(),
+                seen_frame: false,
+                consecutive_restarts: 0,
+                last_restart_attempt: None,
+            }),
         });
 
         SpeechPipelineInner::start_audio_loop(&inner);
         SpeechPipelineInner::start_cpu_sampler(&inner);
+        SpeechPipelineInner::start_audio_watchdog(&inner);
 
         Self { inner }
     }
@@ -185,6 +209,10 @@ impl SpeechPipeline {
 
     pub fn set_listening(&self, active: bool) {
         self.inner.set_listening(active);
+    }
+
+    pub fn has_recent_audio_ingress(&self, max_age: Duration) -> bool {
+        self.inner.has_recent_audio_ingress(max_age)
     }
 
     pub fn set_output_mode(&self, mode: OutputMode) {
@@ -244,9 +272,102 @@ impl SpeechPipelineInner {
         });
     }
 
+    fn start_audio_watchdog(this: &Arc<Self>) {
+        let weak = Arc::downgrade(this);
+        tauri::async_runtime::spawn(async move {
+            let mut interval = tokio::time::interval(AUDIO_WATCHDOG_TICK);
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                let Some(inner) = weak.upgrade() else {
+                    break;
+                };
+                inner.tick_audio_watchdog();
+            }
+        });
+    }
+
+    fn tick_audio_watchdog(&self) {
+        if self.audio.is_synthetic() {
+            return;
+        }
+
+        let now = Instant::now();
+        let elapsed = {
+            let guard = self.audio_watchdog.lock();
+            now.duration_since(guard.last_frame_ingress)
+        };
+
+        if elapsed < AUDIO_INGRESS_STALE_THRESHOLD {
+            return;
+        }
+
+        let cooldown = {
+            let guard = self.audio_watchdog.lock();
+            let shift = guard.consecutive_restarts.min(4);
+            Duration::from_secs(2u64 << shift)
+        };
+
+        {
+            let guard = self.audio_watchdog.lock();
+            if let Some(last) = guard.last_restart_attempt {
+                if now.duration_since(last) < cooldown {
+                    return;
+                }
+            }
+        }
+
+        info!(
+            "audio_watchdog_stale elapsed_ms={} cooldown_ms={}",
+            elapsed.as_millis(),
+            cooldown.as_millis()
+        );
+
+        let restart = self.audio.restart_capture();
+        match restart {
+            Ok(true) => {
+                let mut guard = self.audio_watchdog.lock();
+                guard.consecutive_restarts = guard.consecutive_restarts.saturating_add(1);
+                guard.last_restart_attempt = Some(now);
+                info!(
+                    "audio_watchdog_restart_success attempts={} sample_rate={}",
+                    guard.consecutive_restarts,
+                    self.audio.sample_rate()
+                );
+            }
+            Ok(false) => {
+                let mut guard = self.audio_watchdog.lock();
+                guard.last_restart_attempt = Some(now);
+                info!("audio_watchdog_restart_skipped");
+            }
+            Err(error) => {
+                let mut guard = self.audio_watchdog.lock();
+                guard.consecutive_restarts = guard.consecutive_restarts.saturating_add(1);
+                guard.last_restart_attempt = Some(now);
+                warn!("audio_watchdog_restart_failed error={error}");
+            }
+        }
+    }
+
+    fn note_audio_ingress(&self) {
+        let mut guard = self.audio_watchdog.lock();
+        guard.last_frame_ingress = Instant::now();
+        guard.seen_frame = true;
+        guard.consecutive_restarts = 0;
+    }
+
+    fn has_recent_audio_ingress(&self, max_age: Duration) -> bool {
+        if self.audio.is_synthetic() {
+            return true;
+        }
+        let guard = self.audio_watchdog.lock();
+        guard.seen_frame && guard.last_frame_ingress.elapsed() <= max_age
+    }
+
     fn process_frame(&self, frame: AudioEvent) -> Result<()> {
         match frame {
             AudioEvent::Frame(mut samples) => {
+                self.note_audio_ingress();
                 if !self.listening.load(Ordering::Relaxed) {
                     return Ok(());
                 }
@@ -439,25 +560,35 @@ impl SpeechPipelineInner {
         self.asr.config().clone()
     }
 
-    fn log_no_speech(&self, message: &str) {
-        info!("{message}");
+    fn emit_no_output_reason(&self, reason: NoOutputReason) {
+        info!(
+            "dictation_no_output reason={} message={}",
+            reason.code, reason.message
+        );
+        events::emit_transcription_skipped(&self.app, reason.code, reason.message);
         #[cfg(debug_assertions)]
-        logs::push_log(message.to_string());
+        logs::push_log(format!("No output: {} ({})", reason.message, reason.code));
     }
 
     fn compute_trim_range(
         &self,
         sample_rate: u32,
         buffer_len: usize,
-    ) -> Result<(usize, usize), &'static str> {
+    ) -> Result<(usize, usize), NoOutputReason> {
         if buffer_len == 0 {
-            return Err("No audio captured; skipping ASR");
+            return Err(NoOutputReason {
+                code: "no-audio",
+                message: "No audio captured; skipping ASR",
+            });
         }
 
         let trim = self.vad_trim.lock();
         let min_samples = ((VAD_MIN_SPEECH_MS * sample_rate as u64) / 1000) as usize;
         if trim.first_active.is_none() || trim.active_samples < min_samples {
-            return Err("No speech detected; skipping ASR");
+            return Err(NoOutputReason {
+                code: "no-speech",
+                message: "No speech detected; skipping ASR",
+            });
         }
 
         let first = trim.first_active.unwrap_or(0);
@@ -480,7 +611,10 @@ impl SpeechPipelineInner {
         let end = end_abs.min(buffer_end);
 
         if end <= start {
-            return Err("No speech detected; skipping ASR");
+            return Err(NoOutputReason {
+                code: "trim-rejected",
+                message: "Speech trim rejected; skipping ASR",
+            });
         }
 
         Ok((start - buffer_start, end - buffer_start))
@@ -517,8 +651,8 @@ impl SpeechPipelineInner {
         let trim_range = self.compute_trim_range(sample_rate, samples.len());
         let (trim_start, trim_end) = match trim_range {
             Ok(range) => range,
-            Err(message) => {
-                self.log_no_speech(message);
+            Err(reason) => {
+                self.emit_no_output_reason(reason);
                 self.reset_recognizer();
                 self.reset_vad();
                 self.reset_trim_state();
@@ -531,6 +665,10 @@ impl SpeechPipelineInner {
         match self.asr.finalize_samples(sample_rate, trimmed_samples) {
             Ok(Some(result)) => {
                 if result.text.trim().is_empty() {
+                    self.emit_no_output_reason(NoOutputReason {
+                        code: "empty-transcript",
+                        message: "ASR returned empty transcript",
+                    });
                     events::emit_transcription_error(&self.app, "ASR returned empty transcript");
                     #[cfg(debug_assertions)]
                     logs::push_log("ASR returned empty transcript".to_string());
@@ -538,7 +676,10 @@ impl SpeechPipelineInner {
                 self.consume_result(result);
             }
             Ok(None) => {
-                self.log_no_speech("No speech detected; skipping ASR");
+                self.emit_no_output_reason(NoOutputReason {
+                    code: "no-speech",
+                    message: "No speech detected; skipping ASR",
+                });
             }
             Err(error) => {
                 events::emit_transcription_error(&self.app, &error.to_string());
@@ -556,6 +697,10 @@ impl SpeechPipelineInner {
 
         let trimmed = recognition.text.trim();
         if trimmed.is_empty() {
+            self.emit_no_output_reason(NoOutputReason {
+                code: "empty-transcript",
+                message: "ASR produced empty transcript",
+            });
             return;
         }
 
@@ -567,6 +712,10 @@ impl SpeechPipelineInner {
 
     fn deliver_output(&self, cleaned: &str) {
         if cleaned.trim().is_empty() {
+            self.emit_no_output_reason(NoOutputReason {
+                code: "clean-empty",
+                message: "Cleanup removed all transcript text",
+            });
             return;
         }
 

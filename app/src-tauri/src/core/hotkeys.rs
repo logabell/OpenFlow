@@ -98,19 +98,23 @@ fn handle_hotkey_state(app: &AppHandle, state: HotkeyState) {
     match mode.as_str() {
         "toggle" => {
             if matches!(state, HotkeyState::Pressed) {
+                state_handle.set_hotkey_down(&app_handle, true);
                 if state_handle.is_listening() {
                     state_handle.mark_processing(&app_handle);
                     state_handle.complete_session(&app_handle);
                 } else {
                     state_handle.start_session(&app_handle);
                 }
+                state_handle.set_hotkey_down(&app_handle, false);
             }
         }
         _ => match state {
             HotkeyState::Pressed => {
+                state_handle.set_hotkey_down(&app_handle, true);
                 state_handle.start_session(&app_handle);
             }
             HotkeyState::Released => {
+                state_handle.set_hotkey_down(&app_handle, false);
                 if state_handle.is_listening() {
                     state_handle.mark_processing(&app_handle);
                 }

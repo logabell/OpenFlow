@@ -12,6 +12,7 @@ pub const EVENT_SECURE_BLOCKED: &str = "secure-field-blocked";
 
 pub const EVENT_TRANSCRIPTION_OUTPUT: &str = "transcription-output";
 pub const EVENT_TRANSCRIPTION_ERROR: &str = "transcription-error";
+pub const EVENT_TRANSCRIPTION_SKIPPED: &str = "transcription-skipped";
 pub const EVENT_PERFORMANCE_METRICS: &str = "performance-metrics";
 pub const EVENT_MODEL_STATUS: &str = "model-status";
 
@@ -69,6 +70,23 @@ pub fn emit_transcription_output(app: &AppHandle, text: &str) {
 
 pub fn emit_transcription_error(app: &AppHandle, message: &str) {
     let _ = app.emit(EVENT_TRANSCRIPTION_ERROR, message.to_string());
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptionSkippedPayload {
+    pub reason: String,
+    pub message: String,
+}
+
+pub fn emit_transcription_skipped(app: &AppHandle, reason: &str, message: &str) {
+    let _ = app.emit(
+        EVENT_TRANSCRIPTION_SKIPPED,
+        TranscriptionSkippedPayload {
+            reason: reason.to_string(),
+            message: message.to_string(),
+        },
+    );
 }
 
 pub fn emit_paste_failed(app: &AppHandle, payload: PasteFailedPayload) {
