@@ -138,7 +138,7 @@ impl AppState {
             return;
         }
 
-        show_status_overlay(app);
+        show_status_overlay(app, overlay_monitor_target_from_cursor(app));
     }
 
     pub fn replay_hud_state(&self, app: &AppHandle) {
@@ -245,12 +245,17 @@ impl AppState {
 
     pub fn start_session_with_overlay(&self, app: &AppHandle, show_overlay: bool) {
         let use_window_overlay = show_overlay && window_overlay_supported();
+        let target_monitor = if use_window_overlay {
+            overlay_monitor_target_from_cursor(app)
+        } else {
+            None
+        };
 
         match self.asr_warmup_state() {
             AsrWarmupState::Warming => {
                 tracing::info!("hotkey_ignored_engine_warming");
                 if use_window_overlay {
-                    show_status_overlay(app);
+                    show_status_overlay(app, target_monitor);
                 } else {
                     hide_status_overlay(app);
                 }
@@ -260,7 +265,7 @@ impl AppState {
             AsrWarmupState::Error => {
                 tracing::warn!("hotkey_ignored_engine_error");
                 if use_window_overlay {
-                    show_status_overlay(app);
+                    show_status_overlay(app, target_monitor);
                 } else {
                     hide_status_overlay(app);
                 }
@@ -292,7 +297,7 @@ impl AppState {
         }
 
         if use_window_overlay {
-            show_status_overlay(app);
+            show_status_overlay(app, target_monitor);
         } else if app.get_webview_window("status-overlay").is_some() {
             // Make sure a previously-shown overlay can't steal focus/cancel input
             // while using debug hold-to-talk.
@@ -798,6 +803,50 @@ fn window_overlay_supported() -> bool {
     !is_gnome_wayland_session()
 }
 
+#[derive(Clone, Copy)]
+struct OverlayMonitorTarget {
+    origin_x: i32,
+    origin_y: i32,
+    width: u32,
+    height: u32,
+}
+
+fn overlay_monitor_target_from_cursor(app: &AppHandle) -> Option<OverlayMonitorTarget> {
+    let monitors = app.available_monitors().ok()?;
+    if monitors.is_empty() {
+        return None;
+    }
+
+    let cursor = app.cursor_position().ok();
+
+    let selected = if let Some(cursor) = cursor {
+        monitors.into_iter().find(|monitor| {
+            let position = monitor.position();
+            let size = monitor.size();
+            let left = position.x as f64;
+            let top = position.y as f64;
+            let right = left + size.width as f64;
+            let bottom = top + size.height as f64;
+
+            cursor.x >= left && cursor.x < right && cursor.y >= top && cursor.y < bottom
+        })
+    } else {
+        None
+    }
+    .or_else(|| app.primary_monitor().ok().flatten());
+
+    selected.map(|monitor| {
+        let position = monitor.position();
+        let size = monitor.size();
+        OverlayMonitorTarget {
+            origin_x: position.x,
+            origin_y: position.y,
+            width: size.width,
+            height: size.height,
+        }
+    })
+}
+
 fn is_gnome_wayland_session() -> bool {
     let session = std::env::var("XDG_SESSION_TYPE").unwrap_or_default();
     if !session.eq_ignore_ascii_case("wayland") {
@@ -813,7 +862,7 @@ fn is_gnome_wayland_session() -> bool {
 }
 
 /// Show the status overlay window positioned at the bottom center of the screen
-fn show_status_overlay(app: &AppHandle) {
+fn show_status_overlay(app: &AppHandle, target_monitor: Option<OverlayMonitorTarget>) {
     tracing::info!("Showing status overlay window");
 
     // Try to get existing window first
@@ -829,7 +878,7 @@ fn show_status_overlay(app: &AppHandle) {
             tracing::error!("Failed to show overlay window: {:?}", e);
         }
         // Defer positioning to avoid GTK assertion failures
-        position_overlay_deferred(window, false);
+        position_overlay_deferred(window, false, target_monitor);
     } else {
         tracing::info!("Creating new overlay window");
         // Create window if it doesn't exist (fallback)
@@ -856,7 +905,7 @@ fn show_status_overlay(app: &AppHandle) {
                 let _ = window.set_focusable(false);
                 let _ = window.set_visible_on_all_workspaces(true);
                 // Defer positioning and showing to avoid GTK assertion failures
-                position_overlay_deferred(window, true);
+                position_overlay_deferred(window, true, target_monitor);
             }
             Err(e) => {
                 tracing::error!("Failed to create overlay window: {:?}", e);
@@ -866,25 +915,41 @@ fn show_status_overlay(app: &AppHandle) {
 }
 
 /// Position the overlay window after a small delay to ensure the GTK widget is realized
-fn position_overlay_deferred(window: tauri::WebviewWindow, show_after: bool) {
+fn position_overlay_deferred(
+    window: tauri::WebviewWindow,
+    show_after: bool,
+    target_monitor: Option<OverlayMonitorTarget>,
+) {
     tauri::async_runtime::spawn(async move {
         // Wait for the window to be fully realized by GTK
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-        // Prefer current_monitor (where window is), fall back to primary
-        let monitor = window
-            .current_monitor()
-            .ok()
-            .flatten()
-            .or_else(|| window.primary_monitor().ok().flatten());
+        let monitor = target_monitor.or_else(|| {
+            // Prefer current_monitor (where window is), fall back to primary.
+            // This is only used when there is no cursor-derived monitor target.
+            window
+                .current_monitor()
+                .ok()
+                .flatten()
+                .or_else(|| window.primary_monitor().ok().flatten())
+                .map(|monitor| {
+                    let position = monitor.position();
+                    let size = monitor.size();
+                    OverlayMonitorTarget {
+                        origin_x: position.x,
+                        origin_y: position.y,
+                        width: size.width,
+                        height: size.height,
+                    }
+                })
+        });
 
         if let Some(monitor) = monitor {
-            let size = monitor.size();
             let overlay_width = 220i32;
             let overlay_height = 180i32;
             let margin_bottom = 54i32;
-            let x = (size.width as i32 - overlay_width) / 2;
-            let y = size.height as i32 - overlay_height - margin_bottom;
+            let x = monitor.origin_x + (monitor.width as i32 - overlay_width) / 2;
+            let y = monitor.origin_y + monitor.height as i32 - overlay_height - margin_bottom;
             tracing::debug!("Positioning overlay at ({}, {})", x, y);
             let _ = window.set_position(PhysicalPosition::new(x, y));
         } else {

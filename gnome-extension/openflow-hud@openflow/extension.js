@@ -148,6 +148,9 @@ export default class OpenFlowHudExtension extends Extension {
         this._hideTimeoutId = null;
         this._enabledAtMicros = GLib.get_real_time();
         this._hasSeenPostEnableWrite = false;
+        this._lastMonitorIndex = null;
+        this._displayFocusChangedId = null;
+        this._workspaceChangedId = null;
 
         this._container = new St.Widget({
             reactive: false,
@@ -192,6 +195,21 @@ export default class OpenFlowHudExtension extends Extension {
             this._syncPosition();
         });
 
+        if (global.display?.connect) {
+            this._displayFocusChangedId = global.display.connect("notify::focus-window", () => {
+                this._syncPosition();
+            });
+        }
+
+        if (global.workspace_manager?.connect) {
+            this._workspaceChangedId = global.workspace_manager.connect(
+                "active-workspace-changed",
+                () => {
+                    this._syncPosition();
+                }
+            );
+        }
+
         this._syncPosition();
         this._pollId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, POLL_INTERVAL_MS, () => {
             this._refresh();
@@ -227,6 +245,16 @@ export default class OpenFlowHudExtension extends Extension {
             this._monitorsChangedId = null;
         }
 
+        if (this._displayFocusChangedId && global.display?.disconnect) {
+            global.display.disconnect(this._displayFocusChangedId);
+            this._displayFocusChangedId = null;
+        }
+
+        if (this._workspaceChangedId && global.workspace_manager?.disconnect) {
+            global.workspace_manager.disconnect(this._workspaceChangedId);
+            this._workspaceChangedId = null;
+        }
+
         if (this._drawingArea && this._repaintId) {
             this._drawingArea.disconnect(this._repaintId);
             this._repaintId = null;
@@ -245,6 +273,7 @@ export default class OpenFlowHudExtension extends Extension {
         this._colors = DEFAULT_COLORS;
         this._state = "idle";
         this._phase = 0;
+        this._lastMonitorIndex = null;
     }
 
     _refresh() {
@@ -289,6 +318,9 @@ export default class OpenFlowHudExtension extends Extension {
 
             const signature = `${enabled ? "1" : "0"}:${state}:${pid ?? "none"}:${sessionId ?? "none"}`;
             if (signature === this._lastSignature) {
+                if (this._container?.visible) {
+                    this._syncPosition();
+                }
                 return;
             }
             this._lastSignature = signature;
@@ -470,9 +502,53 @@ export default class OpenFlowHudExtension extends Extension {
             return;
         }
 
-        const monitor = Main.layoutManager.primaryMonitor;
+        const monitors = Main.layoutManager.monitors ?? [];
+        const monitorFromIndex = (index) => {
+            if (!Number.isInteger(index) || index < 0) {
+                return null;
+            }
+            return monitors[index] ?? null;
+        };
+
+        let monitor = null;
+        const focusedWindow = global.display?.get_focus_window?.();
+        if (focusedWindow) {
+            const activeWorkspace = global.workspace_manager?.get_active_workspace?.();
+            const focusedWorkspace = focusedWindow.get_workspace?.();
+            const isFocusedWorkspaceActive =
+                !activeWorkspace || !focusedWorkspace || focusedWorkspace === activeWorkspace;
+            if (isFocusedWorkspaceActive) {
+                const index = focusedWindow.get_monitor();
+                monitor = monitorFromIndex(index);
+                if (monitor) {
+                    this._lastMonitorIndex = index;
+                }
+            }
+        }
+
+        if (!monitor) {
+            const pointerMonitor = global.display?.get_current_monitor?.();
+            monitor = monitorFromIndex(pointerMonitor);
+            if (monitor) {
+                this._lastMonitorIndex = pointerMonitor;
+            }
+        }
+
+        if (!monitor) {
+            monitor = monitorFromIndex(this._lastMonitorIndex);
+        }
+
+        if (!monitor) {
+            monitor = Main.layoutManager.primaryMonitor;
+        }
+
         if (!monitor) {
             return;
+        }
+
+        const selectedIndex = monitors.indexOf(monitor);
+        if (selectedIndex >= 0) {
+            this._lastMonitorIndex = selectedIndex;
         }
 
         const x = monitor.x + Math.floor((monitor.width - HUD_SIZE) / 2);
