@@ -150,6 +150,10 @@
     background-color: transparent;
   }
 
+  html[data-window="overlay"] #root {
+    background-color: transparent;
+  }
+
   :focus-visible {
     outline: 2px solid hsl(var(--accent) / 0.45);
     outline-offset: 2px;

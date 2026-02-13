@@ -16,6 +16,7 @@ use crate::models::{
 use crate::output::PasteShortcut;
 use crate::vad::VadConfig;
 use tauri::WebviewUrl;
+use tauri::window::Color;
 use tauri::{AppHandle, Manager, PhysicalPosition, WebviewWindowBuilder};
 use tracing::{debug, warn};
 
@@ -1007,6 +1008,7 @@ fn show_status_overlay(app: &AppHandle, target_monitor: Option<OverlayMonitorTar
     // Try to get existing window first
     if let Some(window) = app.get_webview_window("status-overlay") {
         tracing::debug!("Found existing overlay window, showing it");
+        let _ = window.set_background_color(Some(Color(0, 0, 0, 0)));
         // The overlay must never steal focus from the active input field.
         // `focused(false)` only controls initial focus state; some compositors may still
         // activate the window on show(). Make it explicitly non-focusable.
@@ -1029,6 +1031,7 @@ fn show_status_overlay(app: &AppHandle, target_monitor: Option<OverlayMonitorTar
         .title("")
         .decorations(false)
         .transparent(true)
+        .background_color(Color(0, 0, 0, 0))
         .always_on_top(true)
         .visible(false) // Start hidden to avoid GTK assertions during realization
         .skip_taskbar(true)
@@ -1041,6 +1044,7 @@ fn show_status_overlay(app: &AppHandle, target_monitor: Option<OverlayMonitorTar
         {
             Ok(window) => {
                 tracing::info!("Overlay window created successfully");
+                let _ = window.set_background_color(Some(Color(0, 0, 0, 0)));
                 let _ = window.set_focusable(false);
                 let _ = window.set_visible_on_all_workspaces(true);
                 // Defer positioning and showing to avoid GTK assertion failures
