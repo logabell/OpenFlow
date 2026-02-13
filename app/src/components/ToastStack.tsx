@@ -3,6 +3,8 @@ import { useAppStore } from "../state/appStore";
 
 type Variant = "info" | "success" | "warning" | "error";
 
+const AUTO_DISMISS_MS = 3000;
+
 const VARIANT_STYLES: Record<Variant, string> = {
   info: "bg-surface border-border text-fg",
   success: "bg-good/10 border-good/35 text-fg",
@@ -15,62 +17,59 @@ const ToastStack = () => {
     toasts: state.toasts,
     dismissToast: state.dismissToast,
   }));
+  const toast = toasts[0];
 
   useEffect(() => {
-    const timers = toasts.map((toast) =>
-      window.setTimeout(() => dismissToast(toast.id), 6000),
-    );
-    return () => {
-      timers.forEach((timer) => window.clearTimeout(timer));
-    };
-  }, [toasts, dismissToast]);
+    if (!toast) {
+      return;
+    }
 
-  if (toasts.length === 0) {
+    const timer = window.setTimeout(() => dismissToast(toast.id), AUTO_DISMISS_MS);
+    return () => window.clearTimeout(timer);
+  }, [toast, dismissToast]);
+
+  if (!toast) {
     return null;
   }
 
+  const variant: Variant = toast.variant ?? "info";
+  const styles = VARIANT_STYLES[variant] ?? VARIANT_STYLES.info;
+
   return (
     <div className="pointer-events-none fixed inset-x-0 top-4 z-[1000] flex flex-col items-center gap-3 px-4">
-      {toasts.map((toast) => {
-        const variant: Variant = toast.variant ?? "info";
-        const styles = VARIANT_STYLES[variant] ?? VARIANT_STYLES.info;
-        return (
-          <div
-            key={toast.id}
-            className={`pointer-events-auto w-full max-w-sm rounded-vibe border px-4 py-3 shadow-[0_6px_0_hsl(var(--shadow)/0.22),0_18px_50px_hsl(var(--shadow)/0.35)] ${styles}`}
-          >
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <p className="text-sm font-semibold leading-tight">{toast.title}</p>
-                {toast.description && (
-                  <p className="mt-1 text-xs text-muted">{toast.description}</p>
-                )}
-              </div>
-              <div className="flex items-center gap-2">
-                {toast.action && (
-                  <button
-                    type="button"
-                    className="text-xs font-semibold uppercase text-fg hover:opacity-90"
-                    onClick={() => {
-                      toast.action?.onClick();
-                      dismissToast(toast.id);
-                    }}
-                  >
-                    {toast.action.label}
-                  </button>
-                )}
-                <button
-                  type="button"
-                  className="text-xs uppercase text-muted hover:text-fg"
-                  onClick={() => dismissToast(toast.id)}
-                >
-                  Close
-                </button>
-              </div>
-            </div>
+      <div
+        className={`pointer-events-auto w-full max-w-sm rounded-vibe border px-4 py-3 shadow-[0_6px_0_hsl(var(--shadow)/0.22),0_18px_50px_hsl(var(--shadow)/0.35)] ${styles}`}
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="text-sm font-semibold leading-tight">{toast.title}</p>
+            {toast.description && (
+              <p className="mt-1 text-xs text-muted">{toast.description}</p>
+            )}
           </div>
-        );
-      })}
+          <div className="flex items-center gap-2">
+            {toast.action && (
+              <button
+                type="button"
+                className="text-xs font-semibold uppercase text-fg hover:opacity-90"
+                onClick={() => {
+                  toast.action?.onClick();
+                  dismissToast(toast.id);
+                }}
+              >
+                {toast.action.label}
+              </button>
+            )}
+            <button
+              type="button"
+              className="text-xs uppercase text-muted hover:text-fg"
+              onClick={() => dismissToast(toast.id)}
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 };

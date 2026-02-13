@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -51,6 +51,8 @@ type TranscriptionSkippedPayload = {
   message: string;
 };
 
+const TRANSCRIPTION_SKIPPED_TOAST_COOLDOWN_MS = 8000;
+
 const App = () => {
   const {
     initialize,
@@ -67,6 +69,7 @@ const App = () => {
   const themePreference = useAppStore(
     (state) => (state.settings?.hudTheme ?? "system") as AppSettings["hudTheme"],
   );
+  const transcriptionSkippedToastLastShownRef = useRef<Record<string, number>>({});
 
   useEffect(() => {
     const cleanup = applyThemePreference(themePreference);
@@ -259,6 +262,15 @@ const App = () => {
         (event) => {
           const payload = event.payload;
           if (!payload) return;
+
+          const toastKey = `${payload.reason}:${payload.message}`;
+          const now = Date.now();
+          const lastShown = transcriptionSkippedToastLastShownRef.current[toastKey] ?? 0;
+          if (now - lastShown < TRANSCRIPTION_SKIPPED_TOAST_COOLDOWN_MS) {
+            return;
+          }
+
+          transcriptionSkippedToastLastShownRef.current[toastKey] = now;
           notify({
             title: "No output",
             description: `${payload.message} (${payload.reason})`,

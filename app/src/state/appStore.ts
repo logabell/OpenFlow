@@ -312,15 +312,11 @@ export const useAppStore = create<AppState>((set, get) => ({
           : 0;
         const durationText = duration > 0 ? ` in ${duration}s` : "";
 
-        toasts = [
-          ...toasts,
-          {
-            id: Date.now(),
-            title: `${modelDisplayName} installed`,
-            description: `Download completed successfully${durationText}`,
-            variant: "success",
-          },
-        ];
+        toasts = buildNextToastList(toasts, {
+          title: `${modelDisplayName} installed`,
+          description: `Download completed successfully${durationText}`,
+          variant: "success",
+        });
         downloadLogs = [
           ...downloadLogs,
           {
@@ -332,15 +328,11 @@ export const useAppStore = create<AppState>((set, get) => ({
           },
         ];
       } else if (next.status.state === "error") {
-        toasts = [
-          ...toasts,
-          {
-            id: Date.now(),
-            title: `${modelDisplayName} download failed`,
-            description: next.status.message,
-            variant: "error",
-          },
-        ];
+        toasts = buildNextToastList(toasts, {
+          title: `${modelDisplayName} download failed`,
+          description: next.status.message,
+          variant: "error",
+        });
         downloadLogs = [
           ...downloadLogs,
           {
@@ -393,7 +385,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   notify: (toast) =>
     set((state) => ({
-      toasts: [...state.toasts, { id: Date.now(), ...toast }],
+      toasts: buildNextToastList(state.toasts, toast),
     })),
   dismissToast: (id) =>
     set((state) => ({
@@ -445,6 +437,23 @@ export interface Toast {
     label: string;
     onClick: () => void;
   };
+}
+
+let nextToastId = 1;
+
+function buildNextToastList(current: Toast[], next: Omit<Toast, "id">): Toast[] {
+  const active = current[0];
+  if (
+    active &&
+    active.title === next.title &&
+    active.description === next.description &&
+    active.variant === next.variant &&
+    active.action?.label === next.action?.label
+  ) {
+    return current;
+  }
+
+  return [{ id: nextToastId++, ...next }];
 }
 
 function formatModelName(name: string): string {
