@@ -182,7 +182,7 @@ have_shared_lib_soname() {
   local soname="$1"
 
   if command -v ldconfig >/dev/null 2>&1; then
-    ldconfig -p 2>/dev/null | grep -q "$soname"
+    ldconfig -p 2>/dev/null | grep "$soname" >/dev/null 2>&1
     return $?
   fi
 
