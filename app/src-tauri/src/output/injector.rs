@@ -285,8 +285,10 @@ fn paste_text_x11(text: &str, shortcut: PasteShortcut) -> Result<(), PasteFailur
     }
 
     let mut owner = Command::new(resolve_binary("xclip"))
-        .args(["-selection", "clipboard", "-in", "-loops", "64"])
+        .args(["-quiet", "-selection", "clipboard", "-in"])
         .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .spawn()
         .map_err(|err| PasteFailure {
             step: PasteFailureStep::ClipboardWrite,
@@ -316,7 +318,7 @@ fn paste_text_x11(text: &str, shortcut: PasteShortcut) -> Result<(), PasteFailur
             step: PasteFailureStep::ClipboardWrite,
             kind: PasteFailureKind::Unconfirmed,
             message: format!(
-                "xclip clipboard owner exited before paste completed (status {status}); transcript left on clipboard."
+                "xclip foreground clipboard owner exited before paste completed (status {status}); transcript left on clipboard."
             ),
             transcript_on_clipboard: true,
         });
