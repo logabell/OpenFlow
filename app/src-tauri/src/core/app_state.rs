@@ -15,8 +15,8 @@ use crate::models::{
 };
 use crate::output::PasteShortcut;
 use crate::vad::VadConfig;
-use tauri::WebviewUrl;
 use tauri::window::Color;
+use tauri::WebviewUrl;
 use tauri::{AppHandle, Manager, PhysicalPosition, WebviewWindowBuilder};
 use tracing::{debug, warn};
 
@@ -84,6 +84,7 @@ pub struct AppState {
     hud_state: Arc<Mutex<String>>,
     asr_warmup: Arc<Mutex<AsrWarmupTracker>>,
     asr_warmup_generation: Arc<AtomicU64>,
+    overlay_generation: Arc<AtomicU64>,
     hotkey_down: Arc<AtomicBool>,
     hold_to_ready_armed: Arc<AtomicBool>,
     hold_to_ready_waiter_running: Arc<AtomicBool>,
@@ -111,6 +112,7 @@ impl AppState {
                 last_error: None,
             })),
             asr_warmup_generation: Arc::new(AtomicU64::new(0)),
+            overlay_generation: Arc::new(AtomicU64::new(0)),
             hotkey_down: Arc::new(AtomicBool::new(false)),
             hold_to_ready_armed: Arc::new(AtomicBool::new(false)),
             hold_to_ready_waiter_running: Arc::new(AtomicBool::new(false)),
@@ -1001,9 +1003,28 @@ fn is_gnome_wayland_session() -> bool {
         .any(|segment| segment.eq_ignore_ascii_case("gnome"))
 }
 
+fn is_wayland_session() -> bool {
+    let session = std::env::var("XDG_SESSION_TYPE").unwrap_or_default();
+    let wayland_display = std::env::var("WAYLAND_DISPLAY").unwrap_or_default();
+    session.eq_ignore_ascii_case("wayland") || !wayland_display.is_empty()
+}
+
+fn next_overlay_generation(app: &AppHandle) -> u64 {
+    app.try_state::<AppState>()
+        .map(|state| state.overlay_generation.fetch_add(1, Ordering::SeqCst) + 1)
+        .unwrap_or(0)
+}
+
+fn overlay_generation_is_current(app: &AppHandle, generation: u64) -> bool {
+    app.try_state::<AppState>()
+        .map(|state| state.overlay_generation.load(Ordering::SeqCst) == generation)
+        .unwrap_or(true)
+}
+
 /// Show the status overlay window positioned at the bottom center of the screen
 fn show_status_overlay(app: &AppHandle, target_monitor: Option<OverlayMonitorTarget>) {
     tracing::info!("Showing status overlay window");
+    let generation = next_overlay_generation(app);
 
     // Try to get existing window first
     if let Some(window) = app.get_webview_window("status-overlay") {
@@ -1019,7 +1040,7 @@ fn show_status_overlay(app: &AppHandle, target_monitor: Option<OverlayMonitorTar
             tracing::error!("Failed to show overlay window: {:?}", e);
         }
         // Defer positioning to avoid GTK assertion failures
-        position_overlay_deferred(window, false, target_monitor);
+        position_overlay_deferred(window, false, target_monitor, generation);
     } else {
         tracing::info!("Creating new overlay window");
         // Create window if it doesn't exist (fallback)
@@ -1048,7 +1069,7 @@ fn show_status_overlay(app: &AppHandle, target_monitor: Option<OverlayMonitorTar
                 let _ = window.set_focusable(false);
                 let _ = window.set_visible_on_all_workspaces(true);
                 // Defer positioning and showing to avoid GTK assertion failures
-                position_overlay_deferred(window, true, target_monitor);
+                position_overlay_deferred(window, true, target_monitor, generation);
             }
             Err(e) => {
                 tracing::error!("Failed to create overlay window: {:?}", e);
@@ -1062,10 +1083,17 @@ fn position_overlay_deferred(
     window: tauri::WebviewWindow,
     show_after: bool,
     target_monitor: Option<OverlayMonitorTarget>,
+    generation: u64,
 ) {
+    let app_handle = window.app_handle().clone();
     tauri::async_runtime::spawn(async move {
         // Wait for the window to be fully realized by GTK
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        if !overlay_generation_is_current(&app_handle, generation) {
+            tracing::debug!("Skipping stale overlay position task generation={generation}");
+            return;
+        }
 
         let monitor = target_monitor.or_else(|| {
             // Prefer current_monitor (where window is), fall back to primary.
@@ -1101,12 +1129,21 @@ fn position_overlay_deferred(
 
         // Show window after positioning if requested (for newly created windows)
         if show_after {
+            if !overlay_generation_is_current(&app_handle, generation) {
+                tracing::debug!("Skipping stale overlay show task generation={generation}");
+                return;
+            }
             let _ = window.show();
             // Ensure the underlying GTK/GDK window exists before we apply input shaping.
             tokio::time::sleep(std::time::Duration::from_millis(80)).await;
         } else {
             // Existing overlay was shown immediately; still give GTK a beat.
             tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        }
+
+        if !overlay_generation_is_current(&app_handle, generation) {
+            tracing::debug!("Skipping stale overlay finalize task generation={generation}");
+            return;
         }
 
         // Keep the overlay non-interactive (click-through + never focusable).
@@ -1117,9 +1154,10 @@ fn position_overlay_deferred(
         let _ = window.set_always_on_top(true);
         let _ = window.set_ignore_cursor_events(true);
 
-        // If the compositor still focused the overlay, immediately hide it.
-        // This helps avoid breaking paste-to-active-app flows.
-        if window.is_focused().unwrap_or(false) {
+        // Some Wayland compositors can still focus the overlay even after we mark it
+        // non-focusable. On X11 this can be a transient map-time state, so only force-hide
+        // when running under Wayland.
+        if is_wayland_session() && window.is_focused().unwrap_or(false) {
             tracing::warn!("Overlay window became focused; hiding to avoid stealing input focus");
             let _ = window.hide();
         }
@@ -1129,6 +1167,7 @@ fn position_overlay_deferred(
 /// Hide the status overlay window
 fn hide_status_overlay(app: &AppHandle) {
     tracing::info!("Hiding status overlay window");
+    let _ = next_overlay_generation(app);
     if let Some(window) = app.get_webview_window("status-overlay") {
         // Avoid poking GTK before the window is realized; it can emit warnings on Wayland.
         if !window.is_visible().unwrap_or(false) {

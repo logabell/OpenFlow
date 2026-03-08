@@ -117,6 +117,43 @@ function resolveWhisperAssetName(
   return `whisper-onnx-${size}${langSuffix}-${precision}`;
 }
 
+function normalizeHotkeyPart(value: string): string {
+  const part = value.trim().toLowerCase();
+  switch (part) {
+    case "control":
+      return "ctrl";
+    case "controlleft":
+    case "ctrlleft":
+      return "leftctrl";
+    case "controlright":
+    case "ctrlright":
+      return "rightctrl";
+    default:
+      return part;
+  }
+}
+
+function hotkeyUsesCtrl(value: string): boolean {
+  return value
+    .split("+")
+    .map(normalizeHotkeyPart)
+    .some((part) => part === "ctrl" || part === "leftctrl" || part === "rightctrl");
+}
+
+function hotkeyMatchesPasteShortcut(
+  hotkey: string,
+  pasteShortcut: AppSettings["pasteShortcut"],
+): boolean {
+  const normalized = hotkey
+    .split("+")
+    .map(normalizeHotkeyPart)
+    .filter(Boolean)
+    .join("+");
+
+  const expected = pasteShortcut === "ctrl-v" ? "ctrl+v" : "ctrl+shift+v";
+  return normalized === expected;
+}
+
 function isPresetSingleKey(value: string): boolean {
   return PRESET_SINGLE_KEYS.includes(value as (typeof PRESET_SINGLE_KEYS)[number]);
 }
@@ -384,6 +421,7 @@ const SettingsPanel = () => {
                 draft={draft}
                 audioDevices={audioDevices}
                 waylandSession={Boolean(linuxPermissions?.waylandSession)}
+                x11Session={Boolean(linuxPermissions?.x11Session)}
                 gnomeHudExtensionStatus={gnomeHudExtensionStatus}
                 hudExtensionBusy={hudExtensionBusy}
                 hudExtensionMessage={hudExtensionMessage}
@@ -1280,6 +1318,7 @@ const GeneralSection = ({
   draft,
   audioDevices,
   waylandSession,
+  x11Session,
   gnomeHudExtensionStatus,
   hudExtensionBusy,
   hudExtensionMessage,
@@ -1291,6 +1330,7 @@ const GeneralSection = ({
   draft: AppSettings;
   audioDevices: AudioDevice[];
   waylandSession: boolean;
+  x11Session: boolean;
   gnomeHudExtensionStatus: GnomeHudExtensionStatus | null;
   hudExtensionBusy: boolean;
   hudExtensionMessage: string | null;
@@ -1306,6 +1346,9 @@ const GeneralSection = ({
   const hotkeyValue = draft[hotkeyKey];
   const presetValue = isPresetSingleKey(hotkeyValue) ? hotkeyValue : "__combo__";
   const isCombo = presetValue === "__combo__";
+  const ctrlBasedHotkey = hotkeyUsesCtrl(hotkeyValue);
+  const hotkeyPasteConflict = hotkeyMatchesPasteShortcut(hotkeyValue, draft.pasteShortcut);
+  const pasteShortcutLabel = draft.pasteShortcut === "ctrl-v" ? "Ctrl+V" : "Ctrl+Shift+V";
 
   const presetOptions = [
     ...(isCombo
@@ -1431,6 +1474,18 @@ const GeneralSection = ({
             {isCombo && (
               <span className="mt-1 text-xs text-muted">
                 Recorded combo overrides the preset key.
+              </span>
+            )}
+            {x11Session && ctrlBasedHotkey && (
+              <span className="mt-1 text-xs text-warn">
+                Control-based hotkeys can interfere with paste injection on X11. Right Alt is the
+                safest option.
+              </span>
+            )}
+            {x11Session && hotkeyPasteConflict && (
+              <span className="mt-1 text-xs text-warn">
+                This hotkey matches the paste shortcut ({pasteShortcutLabel}). Change one of them
+                to avoid self-triggering.
               </span>
             )}
           </div>

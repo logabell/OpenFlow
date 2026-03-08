@@ -762,6 +762,7 @@ mod linux_evdev {
 
 mod linux_x11 {
     use super::{handle_hotkey_state, HotkeyState};
+    use crate::output::synthetic_paste_active;
     use anyhow::Context;
     use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
     use std::thread;
@@ -1128,6 +1129,9 @@ mod linux_x11 {
                 match event {
                     Event::KeyPress(ev) => {
                         if ev.detail == spec.keycode {
+                            if synthetic_paste_active() {
+                                continue;
+                            }
                             let state_bits: u16 = ev.state.into();
                             if (state_bits & spec.required) == spec.required {
                                 if !is_pressed {
@@ -1139,6 +1143,9 @@ mod linux_x11 {
                     }
                     Event::KeyRelease(ev) => {
                         if ev.detail == spec.keycode {
+                            if synthetic_paste_active() {
+                                continue;
+                            }
                             if is_pressed {
                                 is_pressed = false;
                                 handle_hotkey_state(&app, HotkeyState::Released);

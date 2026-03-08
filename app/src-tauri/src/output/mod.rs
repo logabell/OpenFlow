@@ -6,5 +6,6 @@ pub mod uinput;
 pub mod x11;
 
 pub use injector::{
-    OutputAction, OutputInjectionError, OutputInjector, PasteFailureKind, PasteShortcut,
+    synthetic_paste_active, OutputAction, OutputInjectionError, OutputInjector, PasteFailureKind,
+    PasteShortcut,
 };

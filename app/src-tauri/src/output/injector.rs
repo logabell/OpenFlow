@@ -1,6 +1,6 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 #[cfg(debug_assertions)]
 use crate::output::logs;
@@ -9,6 +9,8 @@ use tracing::{info, warn};
 
 use crate::output::uinput;
 use crate::output::x11;
+
+static SYNTHETIC_PASTE_SUPPRESS_UNTIL_MS: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -162,6 +164,10 @@ impl OutputInjector {
     }
 }
 
+pub fn synthetic_paste_active() -> bool {
+    SYNTHETIC_PASTE_SUPPRESS_UNTIL_MS.load(Ordering::SeqCst) > now_unix_millis()
+}
+
 fn paste_text(
     text: &str,
     shortcut: PasteShortcut,
@@ -265,7 +271,7 @@ fn paste_text(
 
 fn paste_text_x11(text: &str, shortcut: PasteShortcut) -> Result<(), PasteFailure> {
     use std::thread::sleep;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     let previous = snapshot_clipboard().ok().flatten();
 
@@ -279,7 +285,7 @@ fn paste_text_x11(text: &str, shortcut: PasteShortcut) -> Result<(), PasteFailur
     }
 
     let mut owner = Command::new(resolve_binary("xclip"))
-        .args(["-selection", "clipboard", "-in", "-loops", "1"])
+        .args(["-selection", "clipboard", "-in", "-loops", "64"])
         .stdin(Stdio::piped())
         .spawn()
         .map_err(|err| PasteFailure {
@@ -302,13 +308,24 @@ fn paste_text_x11(text: &str, shortcut: PasteShortcut) -> Result<(), PasteFailur
     owner.stdin.take();
 
     info!("x11_paste_owner_started");
-    sleep(Duration::from_millis(30));
+    sleep(Duration::from_millis(50));
+
+    if let Ok(Some(status)) = owner.try_wait() {
+        let _ = set_clipboard_text_x11(text);
+        return Err(PasteFailure {
+            step: PasteFailureStep::ClipboardWrite,
+            kind: PasteFailureKind::Unconfirmed,
+            message: format!(
+                "xclip clipboard owner exited before paste completed (status {status}); transcript left on clipboard."
+            ),
+            transcript_on_clipboard: true,
+        });
+    }
 
     let backend = match send_paste_chord(shortcut) {
         Ok(backend) => backend,
         Err(error) => {
-            let _ = owner.kill();
-            let _ = owner.wait();
+            stop_x11_clipboard_owner(&mut owner);
             let _ = set_clipboard_text_x11(text);
             return Err(PasteFailure {
                 step: PasteFailureStep::KeyInject,
@@ -321,40 +338,13 @@ fn paste_text_x11(text: &str, shortcut: PasteShortcut) -> Result<(), PasteFailur
 
     info!("paste_chord_sent backend={backend}");
 
-    let deadline = Instant::now() + Duration::from_secs(2);
-    let mut request_observed = false;
-    loop {
-        match owner.try_wait() {
-            Ok(Some(status)) => {
-                request_observed = status.success();
-                break;
-            }
-            Ok(None) => {
-                if Instant::now() >= deadline {
-                    break;
-                }
-                sleep(Duration::from_millis(10));
-            }
-            Err(_) => break,
-        }
-    }
-
-    if !request_observed {
-        let _ = owner.kill();
-        let _ = owner.wait();
-        let _ = set_clipboard_text_x11(text);
-        return Err(PasteFailure {
-            step: PasteFailureStep::ClipboardWrite,
-            kind: PasteFailureKind::Unconfirmed,
-            message: "X11 paste request not observed before timeout; transcript left on clipboard."
-                .to_string(),
-            transcript_on_clipboard: true,
-        });
-    }
-
-    info!("x11_paste_request_observed");
+    // Keep the X11 selection owner alive long enough for clipboard managers and the
+    // target application to read the transcript without racing restoration.
+    sleep(Duration::from_millis(650));
 
     let Some(previous) = previous else {
+        stop_x11_clipboard_owner(&mut owner);
+        let _ = set_clipboard_text_x11(text);
         return Err(PasteFailure {
             step: PasteFailureStep::ClipboardWrite,
             kind: PasteFailureKind::Unconfirmed,
@@ -365,6 +355,7 @@ fn paste_text_x11(text: &str, shortcut: PasteShortcut) -> Result<(), PasteFailur
     };
 
     if !clipboard_equals(text.as_bytes()) {
+        stop_x11_clipboard_owner(&mut owner);
         return Err(PasteFailure {
             step: PasteFailureStep::ClipboardWrite,
             kind: PasteFailureKind::Unconfirmed,
@@ -373,6 +364,8 @@ fn paste_text_x11(text: &str, shortcut: PasteShortcut) -> Result<(), PasteFailur
             transcript_on_clipboard: false,
         });
     }
+
+    stop_x11_clipboard_owner(&mut owner);
 
     restore_clipboard(previous).map_err(|err| PasteFailure {
         step: PasteFailureStep::ClipboardWrite,
@@ -398,6 +391,8 @@ fn send_paste_chord(shortcut: PasteShortcut) -> anyhow::Result<&'static str> {
         return Ok("uinput-wayland");
     }
 
+    arm_synthetic_paste_suppression(std::time::Duration::from_millis(400));
+
     // Prefer X11 injection on X11 sessions (e.g. VNC/Xvfb).
     match x11::send_paste(shortcut) {
         Ok(()) => Ok("x11"),
@@ -411,6 +406,11 @@ fn send_paste_chord(shortcut: PasteShortcut) -> anyhow::Result<&'static str> {
             }
         }
     }
+}
+
+fn arm_synthetic_paste_suppression(window: std::time::Duration) {
+    let deadline = now_unix_millis().saturating_add(window.as_millis() as u64);
+    SYNTHETIC_PASTE_SUPPRESS_UNTIL_MS.store(deadline, Ordering::SeqCst);
 }
 
 impl PasteFailureKind {
@@ -709,4 +709,21 @@ fn resolve_binary(binary: &str) -> std::ffi::OsString {
     find_binary(binary)
         .map(|path| path.into_os_string())
         .unwrap_or_else(|| std::ffi::OsString::from(binary))
+}
+
+fn stop_x11_clipboard_owner(owner: &mut std::process::Child) {
+    match owner.try_wait() {
+        Ok(Some(_)) => {}
+        _ => {
+            let _ = owner.kill();
+            let _ = owner.wait();
+        }
+    }
+}
+
+fn now_unix_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
 }
